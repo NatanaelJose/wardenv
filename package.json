@@ -1,0 +1,42 @@
+{
+  "name": "wardenv",
+  "version": "0.1.0",
+  "description": "Keep your .env out of the AI's context. A sealed vault for coding agents — blocks secret reads, redacts leaked values, logs every break.",
+  "keywords": [
+    "claude-code",
+    "ai-agent",
+    "dotenv",
+    "env",
+    "secrets",
+    "security",
+    "hooks",
+    "redaction",
+    "llm",
+    "prompt-security"
+  ],
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "wardenv": "src/cli.js"
+  },
+  "main": "src/lib/index.js",
+  "files": [
+    "src/",
+    "hooks/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/wardenv.test.js",
+    "install-hooks": "node src/install.js",
+    "uninstall-hooks": "node src/install.js --uninstall"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NatanaelJose/wardenv.git"
+  },
+  "dependencies": {}
+}
