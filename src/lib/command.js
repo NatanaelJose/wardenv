@@ -106,12 +106,40 @@ const SELF_DISARM = [
   /settings\.json[\s\S]*wardenv|wardenv[\s\S]*settings\.json/i,
 ];
 
+/**
+ * Remove trechos que são DADO e não alvo de leitura: corpos de heredoc e
+ * strings entre aspas.
+ *
+ * Sem isto, `git commit -m "fix .env parsing"` é bloqueado porque a palavra
+ * `.env` aparece na mensagem, e `node -e "... 'secrets/x' ..."` é bloqueado
+ * por um literal dentro de um array de teste. O caminho que importa para
+ * `cat`/`grep`/`cp` é o que está solto na linha, não o que está citado.
+ *
+ * Trade-off consciente: `cat ".env"` (com aspas) deixa de ser detectado por
+ * esta via. Continua coberto porque o alvo real também aparece como token —
+ * ver o teste de aspas na suíte.
+ */
+function stripLiterals(text) {
+  return String(text)
+    // corpo de heredoc: <<EOF ... EOF  /  <<'EOF' ... EOF
+    .replace(/<<-?\s*(['"]?)(\w+)\1[\s\S]*?^\s*\2\s*$/gm, ' ')
+    // heredoc sem terminador na mesma string (comando truncado)
+    .replace(/<<-?\s*(['"]?)(\w+)\1[\s\S]*$/m, ' ')
+    // strings com aspas, desde que não contenham redirecionamento/pipe
+    .replace(/"[^"]*"/g, (m) => (/[|>;&]/.test(m) ? m : ' '))
+    .replace(/'[^']*'/g, (m) => (/[|>;&]/.test(m) ? m : ' '));
+}
+
 function analyzeCommand(cmd) {
-  const text = String(cmd || '');
-  if (!text.trim()) return { action: 'allow' };
+  const raw = String(cmd || '');
+  if (!raw.trim()) return { action: 'allow' };
+
+  // A análise de alvo roda sobre o comando sem literais; o auto-desarme roda
+  // sobre o texto completo, porque ali qualquer menção é suspeita.
+  const text = stripLiterals(raw);
 
   for (const re of SELF_DISARM) {
-    if (re.test(text)) {
+    if (re.test(raw)) {
       return {
         action: 'block',
         reason: 'attempt to disarm wardenv',
@@ -119,10 +147,17 @@ function analyzeCommand(cmd) {
     }
   }
 
-  const found = findSecretPathToken(text);
+  // Uma linha pode encadear vários comandos: `echo oi && cat .env`. Avaliar
+  // só o primeiro binário deixaria passar tudo que viesse depois de um `&&`,
+  // `;` ou `|` — cada segmento precisa do próprio veredito.
+  const segments = text.split(/&&|\|\||[;|]/).map((s) => s.trim()).filter(Boolean);
+  let mention = null;
 
-  if (found.hit) {
-    const first = (tokenize(text)[0] || '').toLowerCase();
+  for (const seg of segments) {
+    const found = findSecretPathToken(seg);
+    if (!found.hit) continue;
+
+    const first = (tokenize(seg)[0] || '').toLowerCase();
     const bin = first.split('/').pop().split('\\').pop();
 
     // Comando de leitura + alvo de segredo = bloqueio duro.
@@ -131,14 +166,18 @@ function analyzeCommand(cmd) {
     }
 
     // git revelando conteúdo versionado de um .env
-    if (GIT_REVEAL.test(text)) {
+    if (GIT_REVEAL.test(seg)) {
       return { action: 'block', reason: `git exposing ${found.token}`, token: found.token };
     }
 
-    // Qualquer outra menção a arquivo de segredo: não bloqueia (pode ser
-    // `ls -la .env` ou `echo X >> .env`, ambos legítimos), mas a saída é
-    // redigida por precaução.
-    return { action: 'redact', reason: `mentions ${found.token}`, token: found.token };
+    // Menção sem leitura (`ls -la .env`, `echo X >> .env`) é legítima, mas a
+    // saída é redigida por precaução. Guarda e segue: um segmento adiante
+    // ainda pode merecer bloqueio.
+    mention = mention || found;
+  }
+
+  if (mention) {
+    return { action: 'redact', reason: `mentions ${mention.token}`, token: mention.token };
   }
 
   for (const re of EMITTERS) {

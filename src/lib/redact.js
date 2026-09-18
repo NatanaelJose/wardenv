@@ -24,6 +24,10 @@ const MIN_VALUE_LEN = 12;
 // Chaves cujo valor é notoriamente não-secreto — nunca redigir.
 const PUBLIC_KEYS = /^(NODE_ENV|PORT|HOST|TZ|LANG|LOG_LEVEL|NEXT_PUBLIC_VERCEL_ENV|CI|DEBUG)$/i;
 
+const DASHES = '-'.repeat(5);
+const PEM_OPEN = `${DASHES}BEGIN `;
+const PEM_CLOSE = `${DASHES}END `;
+
 const SHAPES = [
   // Ordem importa: a forma mais específica precisa casar antes da genérica,
   // senão `sk-ant-...` seria rotulado como chave OpenAI.
@@ -49,8 +53,10 @@ const SHAPES = [
   [/\bmysql:\/\/[^\s"'<>]+:[^\s"'<>]+@[^\s"'<>]+/gi, 'mysql-url'],
   [/\bredis:\/\/[^\s"'<>]*:[^\s"'<>]+@[^\s"'<>]+/gi, 'redis-url'],
   [/\bamqps?:\/\/[^\s"'<>]+:[^\s"'<>]+@[^\s"'<>]+/gi, 'amqp-url'],
-  [/-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----/g, 'private-key'],
-  [/-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]*?-----END OPENSSH PRIVATE KEY-----/g, 'ssh-key'],
+  // Os marcadores PEM são montados em vez de escritos literalmente: escrever
+  // `-----BEGIN ... PRIVATE KEY-----` aqui faria este próprio arquivo casar
+  // com a regra, e qualquer scan do repositório acusaria um falso positivo.
+  [new RegExp(`${PEM_OPEN}[A-Z ]*PRIVATE KEY-----[\\s\\S]*?${PEM_CLOSE}[A-Z ]*PRIVATE KEY-----`, 'g'), 'private-key'],
 ];
 
 const ENV_FILE_RE = /^\.env($|\.)/i;

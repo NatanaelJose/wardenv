@@ -178,3 +178,47 @@ test('atrito: falar de wardenv sem desarmar é permitido', () => {
   assert.equal(analyzeCommand('npm test').action, 'allow');
   assert.equal(analyzeCommand('git commit -m "add wardenv docs"').action, 'allow');
 });
+
+// --------------------------- literais: dado não é alvo (regressão real)
+//
+// Estes casos vieram de dois bloqueios que o wardenv aplicou ao próprio
+// desenvolvimento: uma mensagem de commit que citava ".env" e um array de
+// teste contendo 'secrets/prod.json'. Texto citado é DADO, não alvo.
+
+test('atrito: .env citado em mensagem de commit não bloqueia', () => {
+  const ok = [
+    'git commit -m "fix .env parsing"',
+    'git commit -m "docs: explain why .env is blocked"',
+    'echo "read .env.example instead"',
+  ];
+  for (const c of ok) {
+    assert.equal(analyzeCommand(c).action, 'allow', `falso positivo: ${c}`);
+  }
+});
+
+test('atrito: caminho de segredo dentro de string de código não bloqueia', () => {
+  const c = `node -e "for (const p of ['secrets/prod.json','my-secrets/']) check(p)"`;
+  assert.equal(analyzeCommand(c).action, 'allow');
+});
+
+test('atrito: heredoc com menção a segredo não bloqueia', () => {
+  const c = [
+    'git commit -F - <<EOF',
+    'fix: stop reading .env directly',
+    'EOF',
+  ].join('\n');
+  assert.equal(analyzeCommand(c).action, 'allow');
+});
+
+test('o alvo real continua bloqueado mesmo com literais por perto', () => {
+  assert.equal(analyzeCommand('cat .env').action, 'block');
+  assert.equal(analyzeCommand('echo "reading now" && cat .env').action, 'block');
+  assert.equal(analyzeCommand('grep KEY .env | head -2').action, 'block');
+});
+
+test('auto-desarme é detectado mesmo dentro de aspas', () => {
+  // Ao contrário de um caminho citado, a menção a desarme continua suspeita
+  // onde quer que apareça — inclusive dentro de uma string.
+  const disarm = ['bash -c ', '"', 'wardenv unlock .env', '"'].join('');
+  assert.equal(analyzeCommand(disarm).action, 'block');
+});

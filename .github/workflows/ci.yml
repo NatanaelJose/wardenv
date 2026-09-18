@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows importa tanto quanto Linux aqui: caminhos de segredo,
+        # separadores e PowerShell são parte do que a ferramenta analisa.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [18, 20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+
+  self-scan:
+    # wardenv escaneia o próprio repositório. Se um segredo entrar aqui,
+    # o build quebra — e a ferramenta perde a razão de existir.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: scan tracked files
+        run: |
+          fail=0
+          for f in $(git ls-files); do
+            case "$f" in
+              test/*) continue ;;  # fixtures de teste contêm segredos falsos por desenho
+            esac
+            if ! node src/cli.js scan "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::wardenv found a secret in a tracked file"
+              node src/cli.js scan "$f" || true
+              fail=1
+            fi
+          done
+          exit $fail
