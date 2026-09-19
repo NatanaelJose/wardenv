@@ -140,7 +140,12 @@ switch (cmd) {
 
   case 'scan': {
     const f = rest[0];
-    const text = f ? fs.readFileSync(path.resolve(f), 'utf8') : fs.readFileSync(0, 'utf8');
+    let text;
+    try {
+      text = f ? fs.readFileSync(path.resolve(f), 'utf8') : fs.readFileSync(0, 'utf8');
+    } catch (err) {
+      die(f ? `could not read ${f}: ${err.code || err.message}` : 'no input on stdin');
+    }
     const known = collectKnownSecrets(process.cwd());
     const { hits } = redactText(text, known);
     if (!hits.length) {

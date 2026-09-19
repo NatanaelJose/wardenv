@@ -6,7 +6,7 @@
 
 [![npm](https://img.shields.io/npm/v/wardenv?color=black)](https://www.npmjs.com/package/wardenv)
 [![license](https://img.shields.io/badge/license-MIT-black)](./LICENSE)
-[![tests](https://img.shields.io/badge/tests-14%20passing-black)](./test/wardenv.test.js)
+[![tests](https://img.shields.io/badge/tests-21%20passing-black)](./test/wardenv.test.js)
 [![deps](https://img.shields.io/badge/dependencies-0-black)](./package.json)
 
 </div>
