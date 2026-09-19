@@ -93,6 +93,9 @@ wardenv install
 
 Restart your agent. Done.
 
+<sub>**Pre-release:** the npm package is not published yet. Until it is:
+`git clone https://github.com/NatanaelJose/wardenv && cd wardenv && npm link && wardenv install`</sub>
+
 The installer backs up your `settings.json` first, is idempotent, and leaves every other
 hook untouched — wardenv simply takes the front of the chain, so nothing else even
 processes a blocked command.
@@ -103,6 +106,29 @@ wardenv uninstall     # clean removal, same care
 
 <sub>Works alongside other `PreToolUse` tooling. Verified running with rtk and an 11-hook
 GSD setup on the same machine.</sub>
+
+### Agent support
+
+`wardenv install` detects the agents you have and installs into each.
+
+| Agent | Status | Config |
+|-------|--------|--------|
+| **Claude Code** | ✅ verified end to end | `~/.claude/settings.json` |
+| **Codex CLI** | ⚠️ adapter written, **not verified** | `~/.codex/hooks.json` |
+
+Codex uses the same hook contract as Claude Code — `matcher`, JSON on stdin,
+`permissionDecision: "deny"` — so the adapter is a drop-in and the installer wires it up.
+But it has not been confirmed against a live Codex session, and the installer says so out
+loud when it runs. Treat it as untested until you've tried it with a throwaway `.env`.
+
+Blocking hooks also exist in Gemini CLI (`BeforeTool`), Cursor (`beforeShellExecution`,
+`beforeReadFile`) and Amp (`tool.call`). Adapters are straightforward — the engine in
+`src/lib/` is runtime-agnostic and exposes `inspect()` / `scrub()`.
+
+One caveat worth knowing before you port it: **only Claude Code and Amp let a hook
+rewrite a tool's output.** Codex, Gemini and Cursor (outside MCP) can block and modify
+*input*, but cannot redact what came back — so door 3 degrades from "redact the leak" to
+"block the command", which is blunter.
 
 ---
 

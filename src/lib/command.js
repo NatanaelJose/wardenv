@@ -98,13 +98,28 @@ function findSecretPathToken(cmd) {
 // O agente não pode quebrar o próprio wardenv. Sem isto, todo o resto é teatro:
 // bastaria o agente rodar `wardenv unlock .env` e ler o arquivo em seguida.
 // O unlock é um ato do humano, no terminal dele.
+// Cada segmento é testado com `wardenv` em posição de COMANDO — início do
+// segmento, ou logo após um executor como `bash -c`, `sh -c`, `npx`, `cmd /c`.
+// Testar a frase solta bloqueava `grep "wardenv install" README.md`, que é
+// leitura de documentação e não desarme.
+const CMD_HEAD = String.raw`(?:^|^\s*(?:bash|sh|zsh|cmd|powershell|pwsh|npx|npm\s+exec|env)\s+(?:-\w+\s+)*)`;
+
 const SELF_DISARM = [
-  /\bwardenv\s+(unlock|uninstall|install)\b/i,
-  /\bwardenv\b[\s\S]*--uninstall/i,
-  /install\.js\b/i,
+  new RegExp(`${CMD_HEAD}["']?wardenv["']?\\s+(unlock|uninstall|install)\\b`, 'i'),
+  new RegExp(`${CMD_HEAD}["']?wardenv["']?\\b[^|;&]*--uninstall`, 'i'),
+  // Só o instalador DO wardenv. `install\.js` sozinho pegava qualquer projeto
+  // que tivesse um arquivo com esse nome — largo demais para uma regra que bloqueia.
+  /wardenv[\\/]src[\\/]install\.js/i,
   /(^|[\s/\\])\.wardenv([\\/]|\b)/i,      // mexer no estado (grants.json, audit.jsonl)
-  /settings\.json[\s\S]*wardenv|wardenv[\s\S]*settings\.json/i,
+  // Reescrever a config do agente para arrancar o wardenv de lá.
+  /(>|>>|tee|Set-Content|Out-File)[^|;&]*(settings|hooks)\.json/i,
 ];
+
+/** Testa desarme em cada segmento, para pegar `foo && wardenv unlock`. */
+function isSelfDisarm(raw) {
+  const segments = String(raw).split(/&&|\|\||[;|]/).map((s) => s.trim()).filter(Boolean);
+  return segments.some((seg) => SELF_DISARM.some((re) => re.test(seg)));
+}
 
 /**
  * Remove trechos que são DADO e não alvo de leitura: corpos de heredoc e
@@ -138,13 +153,8 @@ function analyzeCommand(cmd) {
   // sobre o texto completo, porque ali qualquer menção é suspeita.
   const text = stripLiterals(raw);
 
-  for (const re of SELF_DISARM) {
-    if (re.test(raw)) {
-      return {
-        action: 'block',
-        reason: 'attempt to disarm wardenv',
-      };
-    }
+  if (isSelfDisarm(raw)) {
+    return { action: 'block', reason: 'attempt to disarm wardenv' };
   }
 
   // Uma linha pode encadear vários comandos: `echo oi && cat .env`. Avaliar

@@ -27,6 +27,7 @@
     "src/",
     "hooks/",
     "README.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "scripts": {

@@ -164,7 +164,7 @@ test('o agente não consegue desarmar o wardenv', () => {
   const attacks = [
     'wardenv unlock .env',
     'wardenv uninstall',
-    'node src/install.js --uninstall',
+    'node /c/dev/wardenv/src/install.js --uninstall',
     'rm -rf ~/.wardenv',
     'cat ~/.wardenv/grants.json',
     'echo "{}" > ~/.claude/settings.json && wardenv',
@@ -216,9 +216,43 @@ test('o alvo real continua bloqueado mesmo com literais por perto', () => {
   assert.equal(analyzeCommand('grep KEY .env | head -2').action, 'block');
 });
 
-test('auto-desarme é detectado mesmo dentro de aspas', () => {
-  // Ao contrário de um caminho citado, a menção a desarme continua suspeita
-  // onde quer que apareça — inclusive dentro de uma string.
-  const disarm = ['bash -c ', '"', 'wardenv unlock .env', '"'].join('');
-  assert.equal(analyzeCommand(disarm).action, 'block');
+test('atrito: install.js de OUTRO projeto não é auto-desarme', () => {
+  // A regra original casava com qualquer caminho contendo "install.js",
+  // o que bloquearia o instalador de qualquer projeto no mundo.
+  const ok = [
+    'node scripts/install.js',
+    'node /tmp/t-install.js',
+    'npm run install.js',
+  ];
+  for (const c of ok) {
+    assert.equal(analyzeCommand(c).action, 'allow', `falso positivo: ${c}`);
+  }
+  // mas o instalador do próprio wardenv continua protegido
+  assert.equal(analyzeCommand('node C:/dev/wardenv/src/install.js').action, 'block');
+});
+
+test('auto-desarme é detectado via executor (bash -c, npx)', () => {
+  // `wardenv` precisa estar em posição de COMANDO — no início do segmento ou
+  // logo após um executor. Isso cobre a evasão sem bloquear documentação.
+  const disarm = [
+    ['bash -c ', '"', 'wardenv unlock .env', '"'].join(''),
+    ['npx ', 'wardenv', ' unlock .env'].join(''),
+    ['echo oi && ', 'wardenv', ' unlock .env'].join(''),
+  ];
+  for (const c of disarm) {
+    assert.equal(analyzeCommand(c).action, 'block', `deveria bloquear: ${c}`);
+  }
+});
+
+test('atrito: procurar ou documentar o comando não é desarme', () => {
+  // Estes vieram de bloqueios reais durante o desenvolvimento: buscar a
+  // string na documentação não é tentar desarmar a ferramenta.
+  const ok = [
+    ['grep -n ', '"', 'wardenv install', '"', ' README.md'].join(''),
+    ['echo ', '"', 'run wardenv unlock to grant access', '"'].join(''),
+    ['git commit -m ', '"', 'docs: explain wardenv install', '"'].join(''),
+  ];
+  for (const c of ok) {
+    assert.equal(analyzeCommand(c).action, 'allow', `falso positivo: ${c}`);
+  }
 });
