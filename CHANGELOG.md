@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.2 — 2026-09-19
+
+Polish pass. No behavior change to what gets blocked or redacted.
+
+### Fixed
+
+- `wardenv scan` on a missing file, and `wardenv status` in a directory it cannot read,
+  both dumped a raw Node stack trace. They now print an error and exit 1.
+- The README badge claimed 14 passing tests when the suite had 21.
+
+### Added
+
+- A CLI test suite covering the interface itself: help output, argument validation, exit
+  codes, and that filesystem errors never surface as stack traces. `npm test` now runs
+  both suites — 27 tests total.
+
 ## 0.1.1 — 2026-09-19
 
 - Package description rewritten; it still carried wording from the project's

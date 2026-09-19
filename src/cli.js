@@ -57,7 +57,12 @@ switch (cmd) {
 
   case 'status': {
     const cwd = process.cwd();
-    const envs = fs.readdirSync(cwd).filter((f) => /^\.env($|\.)/i.test(f));
+    let envs = [];
+    try {
+      envs = fs.readdirSync(cwd).filter((f) => /^\.env($|\.)/i.test(f));
+    } catch (err) {
+      die(`could not read ${cwd}: ${err.code || err.message}`);
+    }
     console.log(`directory: ${cwd}`);
     if (!envs.length) {
       console.log('no .env files here.');

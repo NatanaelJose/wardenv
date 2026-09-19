@@ -6,7 +6,7 @@
 
 [![npm](https://img.shields.io/npm/v/wardenv?color=black)](https://www.npmjs.com/package/wardenv)
 [![license](https://img.shields.io/badge/license-MIT-black)](./LICENSE)
-[![tests](https://img.shields.io/badge/tests-21%20passing-black)](./test/wardenv.test.js)
+[![tests](https://img.shields.io/badge/tests-27%20passing-black)](./test/wardenv.test.js)
 [![deps](https://img.shields.io/badge/dependencies-0-black)](./package.json)
 
 </div>
@@ -264,11 +264,15 @@ A tool that reads your secrets should not pull a supply chain along with it.
 npm test
 ```
 
-14 tests across two classes, and the second one matters as much as the first:
+27 tests. The engine suite covers two classes, and the second matters as much as the
+first:
 
 - **Leak** (false negative) — a secret got through. A security failure.
 - **Friction** (false positive) — legitimate work got blocked. A usability failure that
   ends with the tool uninstalled.
+
+A separate CLI suite covers what the human sees — including that a filesystem error
+surfaces as a message rather than a Node stack trace.
 
 ---
 
