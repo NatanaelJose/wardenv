@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.1 — 2026-09-19
+
+- Package description rewritten; it still carried wording from the project's
+  pre-rename draft.
+- Added `homepage` and `bugs` links so the npm page points at the repo.
+- README no longer mentions a pre-release install path.
+
+## 0.1.0 — 2026-09-19
 
 First working version. Blocks secret reads, redacts leaked values in tool output, blocks
 secrets being written into non-vault files, and logs every unlock.

@@ -93,9 +93,6 @@ wardenv install
 
 Restart your agent. Done.
 
-<sub>**Pre-release:** the npm package is not published yet. Until it is:
-`git clone https://github.com/NatanaelJose/wardenv && cd wardenv && npm link && wardenv install`</sub>
-
 The installer backs up your `settings.json` first, is idempotent, and leaves every other
 hook untouched — wardenv simply takes the front of the chain, so nothing else even
 processes a blocked command.
