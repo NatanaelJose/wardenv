@@ -91,6 +91,16 @@ process.stdin.on('end', () => {
       const verdict = analyzeCommand(cmd);
 
       if (verdict.action === 'block') {
+        // O unlock granted via `wardenv unlock <file>` precisa valer aqui
+        // também — não só para a tool Read. Sem isto, `wardenv unlock .env`
+        // nunca destrava `cat .env`/`grep ... .env`, que é o caminho mais
+        // comum de leitura no dia a dia.
+        if (verdict.token && isUnlocked(cwd, verdict.token)) {
+          consumeUnlock(cwd, verdict.token);
+          log({ event: 'unlock-used', tool, path: verdict.token, agent, cwd });
+          allow();
+        }
+
         log({ event: 'block-cmd', tool, command: cmd, reason: verdict.reason, agent, cwd });
         deny(
           `wardenv: command reads a secret file (${verdict.reason}).`,

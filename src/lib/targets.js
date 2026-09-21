@@ -45,13 +45,20 @@ const SECRET_FILE_RE = [
 ];
 
 // Diretórios inteiros que são cofre.
+//
+// Cada regra exige uma barra de verdade em pelo menos um lado do segmento
+// (`[\\/]X` ou `X[\\/]`) — nunca a palavra sozinha ocupando a string inteira.
+// Sem isto, `(^|[\\/])secrets?([\\/]|$)` casava com o argumento nu `SECRET`
+// de `grep SECRET .env`, que não é caminho nenhum: é o padrão de busca do
+// grep. Bloqueava o comando pelo motivo errado e, pior, o unlock concedido
+// para `.env` nunca destravava porque o token capturado era "SECRET".
 const SECRET_DIR_RE = [
-  /(^|[\\/])\.ssh([\\/]|$)/i,
-  /(^|[\\/])\.gnupg([\\/]|$)/i,
-  /(^|[\\/])\.aws([\\/]|$)/i,
-  /(^|[\\/])\.kube([\\/]|$)/i,
-  /(^|[\\/])\.docker([\\/]|$)/i,
-  /(^|[\\/])secrets?([\\/]|$)/i,
+  /[\\/]\.ssh(?:[\\/]|$)|^\.ssh[\\/]/i,
+  /[\\/]\.gnupg(?:[\\/]|$)|^\.gnupg[\\/]/i,
+  /[\\/]\.aws(?:[\\/]|$)|^\.aws[\\/]/i,
+  /[\\/]\.kube(?:[\\/]|$)|^\.kube[\\/]/i,
+  /[\\/]\.docker(?:[\\/]|$)|^\.docker[\\/]/i,
+  /[\\/]secrets?(?:[\\/]|$)|^secrets?[\\/]/i,
 ];
 
 function normalize(p) {

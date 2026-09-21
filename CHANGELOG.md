@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.1.3 — 2026-09-21
+
+Two real security/usability bugs, both found from a live false report: `wardenv unlock`
+appeared to do nothing.
+
+### Fixed
+
+- **`wardenv unlock` never worked for Bash or PowerShell commands.** The unlock grant was
+  only checked in the `Read` tool branch of the PreToolUse hook. `cat .env` and
+  `grep ... .env` — the most common way anyone actually reads a file — ignored any active
+  grant and stayed blocked forever, even immediately after a successful
+  `wardenv unlock .env`. Fixed: the Bash/PowerShell branch now checks and consumes the
+  grant exactly like Read does.
+- **A directory rule matched a bare word, not a path.** `secrets?` (and the five other
+  directory patterns: `.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`) matched the *entire
+  string* when it had no slash at all, not just a path segment. `grep SECRET .env` was
+  blocked because `SECRET` — grep's search pattern, not a path — was misclassified as a
+  secret directory. This also broke unlock indirectly: the token captured for the grant
+  check was `SECRET` instead of `.env`, so even a correct grant lookup would have missed.
+  Fixed: each rule now requires an actual path separator on at least one side.
+
+### Added
+
+- `test/hooks.test.js`: integration tests that invoke `hooks/pre-tool.js` as a real
+  subprocess over stdin/stdout, the way Claude Code does — not just the underlying
+  `src/lib/` functions in isolation. The unlock bug lived entirely in the hook's wiring,
+  not in any individual module, so unit tests on `lib/unlock.js` and `lib/command.js`
+  alone could never have caught it. 8 new tests, 35 total.
+
 ## 0.1.2 — 2026-09-19
 
 Polish pass. No behavior change to what gets blocked or redacted.
