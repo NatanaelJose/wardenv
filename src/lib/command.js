@@ -54,6 +54,18 @@ const EMITTERS = [
 // `git show HEAD:.env`, `git cat-file`, `git log -p` sobre arquivo de segredo.
 const GIT_REVEAL = /\bgit\s+(show|cat-file|log|diff)\b/i;
 
+// Interpretador rodando programa na própria linha: `node -e "...readFileSync('.env')"`,
+// `python -c "open('.env').read()"`. O caminho vive DENTRO de uma string, então
+// `stripLiterals` o apagava e o comando passava como `allow` — sem nem cair no
+// `redact`. Ler config por `node -e` é movimento comum de agente, não ofuscação,
+// então entra no modelo de ameaça. Estes são avaliados sobre o texto cru.
+const INLINE_SCRIPT = /(?:^|[\s|;&])(?:node|deno|bun|python[0-9.]*|python3|ruby|perl|php|Rscript)\s+(?:-\w+\s+)*-(?:e|c|p|pe|ne|E)\b/i;
+
+// Dentro do script, o caminho só conta quando está sendo ABERTO. Um literal
+// solto (`x=['secrets/a']`) é dado, e tratá-lo como leitura quebrava o teste
+// de atrito que já existia para esse caso.
+const SCRIPT_READ = /\b(?:readFileSync|readFile|createReadStream|open|openSync|File\.read|IO\.read|file_get_contents|read_text|readlines|load)\s*\(/i;
+
 function stripQuotes(tok) {
   return tok.replace(/^['"]|['"]$/g, '');
 }
@@ -130,10 +142,24 @@ function isSelfDisarm(raw) {
  * por um literal dentro de um array de teste. O caminho que importa para
  * `cat`/`grep`/`cp` é o que está solto na linha, não o que está citado.
  *
- * Trade-off consciente: `cat ".env"` (com aspas) deixa de ser detectado por
- * esta via. Continua coberto porque o alvo real também aparece como token —
- * ver o teste de aspas na suíte.
+ * Uma exceção: a string que é EXATAMENTE um caminho de segredo (`cat ".env"`)
+ * é alvo, não dado — quem escreve aspas ali está citando o arquivo, não
+ * falando sobre ele. Ela sobrevive sem as aspas para ser tokenizada adiante.
+ * A frase que só MENCIONA o nome no meio de outras palavras
+ * (`-m "fix .env parsing"`) continua sendo apagada.
+ *
+ * Ver 'cofre: alvo entre aspas é reconhecido' e o par de atrito na suíte.
  */
+function keepIfTarget(m) {
+  // Redirecionamento/pipe dentro da string: devolve intacto, como antes.
+  if (/[|>;&]/.test(m)) return m;
+  const inner = m.slice(1, -1).trim();
+  // Só o literal que é o caminho inteiro conta como alvo; com espaço no meio
+  // é frase, e frase é dado.
+  if (inner && !/\s/.test(inner) && classifyPath(inner).secret) return ` ${inner} `;
+  return ' ';
+}
+
 function stripLiterals(text) {
   return String(text)
     // corpo de heredoc: <<EOF ... EOF  /  <<'EOF' ... EOF
@@ -141,8 +167,8 @@ function stripLiterals(text) {
     // heredoc sem terminador na mesma string (comando truncado)
     .replace(/<<-?\s*(['"]?)(\w+)\1[\s\S]*$/m, ' ')
     // strings com aspas, desde que não contenham redirecionamento/pipe
-    .replace(/"[^"]*"/g, (m) => (/[|>;&]/.test(m) ? m : ' '))
-    .replace(/'[^']*'/g, (m) => (/[|>;&]/.test(m) ? m : ' '));
+    .replace(/"[^"]*"/g, keepIfTarget)
+    .replace(/'[^']*'/g, keepIfTarget);
 }
 
 function analyzeCommand(cmd) {
@@ -155,6 +181,18 @@ function analyzeCommand(cmd) {
 
   if (isSelfDisarm(raw)) {
     return { action: 'block', reason: 'attempt to disarm wardenv' };
+  }
+
+  // Interpretador com script na linha: o alvo está dentro da string, então
+  // precisa ser procurado no texto CRU, antes de `stripLiterals`. Cada segmento
+  // é testado separadamente para não confundir `node -e "..."` com um `cat .env`
+  // que venha depois de um `&&`.
+  for (const seg of raw.split(/&&|\|\||[;|]/)) {
+    if (!INLINE_SCRIPT.test(seg) || !SCRIPT_READ.test(seg)) continue;
+    const found = findSecretPathToken(seg.replace(/["']/g, ' '));
+    if (found.hit) {
+      return { action: 'block', reason: `inline script reads ${found.token}`, token: found.token };
+    }
   }
 
   // Uma linha pode encadear vários comandos: `echo oi && cat .env`. Avaliar

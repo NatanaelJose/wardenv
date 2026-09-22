@@ -256,3 +256,108 @@ test('atrito: procurar ou documentar o comando não é desarme', () => {
     assert.equal(analyzeCommand(c).action, 'allow', `falso positivo: ${c}`);
   }
 });
+
+// ------------------------------------------------ alvo entre aspas (#1)
+
+test('cofre: alvo entre aspas é reconhecido', () => {
+  // As aspas são sintaxe do shell, não parte do nome: `cat ".env"` mira o
+  // mesmo arquivo que `cat .env`. Antes disto, `stripLiterals` apagava a
+  // string inteira e o comando passava como `allow` — o comentário da função
+  // afirmava que o token sobrevivia, e não sobrevivia.
+  const E = ['.e', 'nv'].join('');
+  const quoted = [
+    ['cat "', E, '"'].join(''),
+    ["cat '", E, "'"].join(''),
+    ['cat "', E, '.local"'].join(''),
+    ['grep KEY "', E, '"'].join(''),
+  ];
+  for (const c of quoted) {
+    assert.equal(analyzeCommand(c).action, 'block', `deveria bloquear: ${c}`);
+  }
+  assert.equal(classifyPath(['"', E, '"'].join('')).secret, true);
+  assert.equal(classifyPath([' ', E, ' '].join('')).secret, true);
+});
+
+test('atrito: menção entre aspas continua liberada', () => {
+  // A contraparte do teste acima: o literal que é FRASE sobre o arquivo
+  // segue sendo dado, não alvo. Sem isto, o fix de aspas reintroduziria
+  // exatamente os falsos positivos que stripLiterals existe para evitar.
+  const E = ['.e', 'nv'].join('');
+  const ok = [
+    ['git commit -m "fix ', E, ' parsing"'].join(''),
+    ['echo "the ', E, ' file holds credentials"'].join(''),
+  ];
+  for (const c of ok) {
+    assert.equal(analyzeCommand(c).action, 'allow', `falso positivo: ${c}`);
+  }
+});
+
+// --------------------------------------- interpretador na linha (#3)
+
+test('cofre: interpretador lendo segredo na própria linha é bloqueado', () => {
+  // `node -e "...readFileSync('.env')"` passava como `allow`: o caminho vive
+  // dentro de uma string, então stripLiterals o removia antes da análise.
+  // Ler config por one-liner é movimento comum de agente, não ofuscação.
+  const E = ['.e', 'nv'].join('');
+  const cases = [
+    ['node -e "console.log(require(', "'fs'", ").readFileSync('", E, "'))\""].join(''),
+    ['python -c "print(open(', "'", E, "'", ').read())"'].join(''),
+    ["ruby -e 'puts File.read(\"", E, '")\''].join(''),
+    ['echo oi && node -e "require(', "'fs'", ").readFileSync('", E, "')\""].join(''),
+  ];
+  for (const c of cases) {
+    assert.equal(analyzeCommand(c).action, 'block', `deveria bloquear: ${c}`);
+  }
+});
+
+test('atrito: one-liner que não toca segredo continua liberado', () => {
+  const ok = [
+    'node -e "console.log(1+1)"',
+    'node -e "console.log(process.env.PORT)"',
+    'node scripts/build.js',
+    'python -c "import sys; print(sys.version)"',
+  ];
+  for (const c of ok) {
+    assert.equal(analyzeCommand(c).action, 'allow', `falso positivo: ${c}`);
+  }
+});
+
+// ------------------------------------------------ rotação do log (#5)
+
+test('auditoria: rotação preserva histórico em vez de sobrescrever', () => {
+  // Antes guardava só `.1`: cada rotação apagava a anterior e a trilha parava
+  // em ~4MB. Num log de segurança, truncamento silencioso some justo com o
+  // histórico antigo que se quer auditar depois.
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const pathMod = require('node:path');
+  const { execFileSync } = require('node:child_process');
+
+  const home = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'wardenv-rotate-'));
+  const auditPath = pathMod.join(__dirname, '..', 'src', 'lib', 'audit.js');
+
+  // Roda num processo isolado com os.homedir() sobrescrito ANTES de carregar
+  // o módulo: LOG_DIR é resolvido na carga, e no Windows os.homedir() lê do
+  // SO em vez de HOME/USERPROFILE — sem este stub o teste escreveria no log
+  // real do usuário em vez do sandbox.
+  //
+  // `sanitize()` trunca cada string em 400 chars, então o volume tem de vir
+  // do NÚMERO de entradas, não do tamanho de uma só.
+  const script = [
+    'const os = require("node:os");',
+    `os.homedir = () => ${JSON.stringify(home)};`,
+    `const { log, LOG_FILE } = require(${JSON.stringify(auditPath)});`,
+    `if (!LOG_FILE.startsWith(${JSON.stringify(home)})) throw new Error("stub falhou: " + LOG_FILE);`,
+    'const big = "x".repeat(1000);',
+    'for (let i = 0; i < 20000; i++) log({ event: "t", path: big });',
+  ].join('\n');
+
+  execFileSync(process.execPath, ['-e', script]);
+
+  const files = fs.readdirSync(pathMod.join(home, '.wardenv'))
+    .filter((f) => f.startsWith('audit.jsonl'));
+
+  assert.ok(files.includes('audit.jsonl.1'), 'deveria existir o primeiro rotacionado');
+  assert.ok(files.includes('audit.jsonl.2'), 'o histórico anterior deveria sobreviver, não ser sobrescrito');
+  assert.ok(files.length <= 6, `deveria parar em 5 rotacionados + o atual, veio ${files.length}`);
+});

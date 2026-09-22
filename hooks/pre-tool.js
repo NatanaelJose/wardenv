@@ -115,7 +115,14 @@ process.stdin.on('end', () => {
     // ---- Escrita: impedir que segredo vá para arquivo versionado ------
     if (TOOLS_WRITE.has(tool)) {
       const fp = ti.file_path || '';
-      const body = ti.content || ti.file_text || ti.new_string || ti.new_str || '';
+      // MultiEdit não traz o texto num campo escalar: ele vem em `edits[]`,
+      // cada item com seu próprio `new_string`. Ler só os campos soltos fazia
+      // o corpo chegar sempre vazio aqui — a tool estava registrada no matcher
+      // e em TOOLS_WRITE, parecia guardada, e passava qualquer segredo.
+      const body = [
+        ti.content, ti.file_text, ti.new_string, ti.new_str,
+        ...(Array.isArray(ti.edits) ? ti.edits.map((e) => e && (e.new_string || e.new_str)) : []),
+      ].filter((s) => typeof s === 'string' && s).join('\n');
       // Escrever NO .env é legítimo (criar/editar credencial local).
       // O risco é o inverso: escrever segredo em arquivo NÃO-secreto.
       if (classifyPath(fp).secret) allow();

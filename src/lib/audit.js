@@ -12,6 +12,11 @@ const path = require('path');
 const LOG_DIR = path.join(os.homedir(), '.wardenv');
 const LOG_FILE = path.join(LOG_DIR, 'audit.jsonl');
 const MAX_BYTES = 2 * 1024 * 1024;
+// Quantos arquivos rotacionados guardar. Com só o `.1`, cada rotação
+// sobrescrevia o anterior e a trilha parava em ~4MB — truncamento silencioso,
+// que num log de segurança é a falha que mais dói: some justo o histórico
+// antigo que se quer auditar depois.
+const KEEP = 5;
 
 // Campos que jamais entram no log em texto puro.
 const SENSITIVE = new Set(['content', 'file_text', 'new_string', 'value', 'values']);
@@ -33,9 +38,18 @@ function sanitize(entry) {
 function rotate() {
   try {
     const st = fs.statSync(LOG_FILE);
-    if (st.size > MAX_BYTES) {
-      fs.renameSync(LOG_FILE, LOG_FILE + '.1');
+    if (st.size <= MAX_BYTES) return;
+
+    // Envelhece a série de trás para frente: .4→.5, .3→.4, … e o mais velho cai.
+    try {
+      fs.unlinkSync(`${LOG_FILE}.${KEEP}`);
+    } catch {}
+    for (let i = KEEP - 1; i >= 1; i--) {
+      try {
+        fs.renameSync(`${LOG_FILE}.${i}`, `${LOG_FILE}.${i + 1}`);
+      } catch {}
     }
+    fs.renameSync(LOG_FILE, `${LOG_FILE}.1`);
   } catch {}
 }
 
@@ -44,6 +58,10 @@ function log(entry) {
     fs.mkdirSync(LOG_DIR, { recursive: true });
     rotate();
     const line = JSON.stringify({ ts: new Date().toISOString(), ...sanitize(entry) });
+    // Um append único com a linha inteira: hooks do agente principal e dos
+    // subagentes rodam em paralelo, e escrever de uma vez evita linha
+    // entrelaçada. Se a rotação acontecer entre o statSync e este append, o
+    // arquivo é recriado e a entrada entra nele — nenhuma é perdida.
     fs.appendFileSync(LOG_FILE, line + '\n', { mode: 0o600 });
   } catch {
     // auditoria nunca pode quebrar o fluxo

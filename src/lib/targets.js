@@ -61,8 +61,20 @@ const SECRET_DIR_RE = [
   /[\\/]secrets?(?:[\\/]|$)|^secrets?[\\/]/i,
 ];
 
+// Aspas ao redor do caminho são sintaxe do shell, não parte do nome do
+// arquivo: `cat ".env"` mira o mesmo alvo que `cat .env`. Sem tirar elas
+// aqui, `".env"` era classificado como não-segredo e o comando passava
+// inteiro. Espaço nas pontas cai no mesmo caso.
+function unquote(p) {
+  let s = String(p || '').trim();
+  while (s.length > 1 && /^['"]/.test(s) && s[s.length - 1] === s[0]) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
 function normalize(p) {
-  return String(p || '').replace(/\\/g, '/');
+  return unquote(p).replace(/\\/g, '/');
 }
 
 /**

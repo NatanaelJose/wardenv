@@ -114,3 +114,72 @@ test('Bash: unlock de um arquivo não libera outro', () => {
   const resB = runHook({ cwd: dirB, tool_name: 'Bash', tool_input: { command: 'cat .env' } });
   assert.ok(isDenied(resB), 'unlock não deveria vazar para outro diretório/arquivo');
 });
+
+// ------------------------------------------------------- MultiEdit (#2)
+
+test('MultiEdit: segredo dentro de edits[] é bloqueado', () => {
+  // MultiEdit estava no matcher e em TOOLS_WRITE — parecia guardado. Mas o
+  // hook só lia campos escalares (content/new_string), e MultiEdit carrega o
+  // texto em edits[].new_string. O corpo chegava sempre vazio, e QUALQUER
+  // segredo passava. Pior forma de falha: registrado, aparentemente coberto,
+  // inerte na prática.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-multiedit-'));
+  const secret = 'abcdefghijklmnopqrstuvwxyz012345';
+  fs.writeFileSync(path.join(dir, '.env'), `API_TOKEN=${secret}\n`);
+
+  const res = runHook({
+    cwd: dir,
+    tool_name: 'MultiEdit',
+    tool_input: {
+      file_path: path.join(dir, 'app.js'),
+      edits: [
+        { old_string: 'a', new_string: 'const port = 3000' },
+        { old_string: 'b', new_string: `const token = "${secret}"` },
+      ],
+    },
+  });
+  assert.ok(isDenied(res), 'MultiEdit deveria bloquear segredo em edits[]');
+});
+
+test('atrito: MultiEdit sem segredo continua passando', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-multiedit-ok-'));
+  fs.writeFileSync(path.join(dir, '.env'), 'API_TOKEN=abcdefghijklmnopqrstuvwxyz012345\n');
+
+  const res = runHook({
+    cwd: dir,
+    tool_name: 'MultiEdit',
+    tool_input: {
+      file_path: path.join(dir, 'app.js'),
+      edits: [{ old_string: 'a', new_string: 'const port = process.env.PORT' }],
+    },
+  });
+  assert.equal(res, null, 'edição legítima não deveria ser bloqueada');
+});
+
+// ------------------------------------------ saída estruturada (#4)
+
+test('PostToolUse: objeto {stdout} é redigido sem virar blob JSON', () => {
+  // Antes, tool_output não-string era serializado com JSON.stringify e o JSON
+  // voltava como updatedOutput — trocando a saída estruturada por um blob,
+  // e só quando havia redação, o que tornava o efeito invisível.
+  const POST = path.join(__dirname, '..', 'hooks', 'post-tool.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-post-'));
+  const secret = 'abcdefghijklmnopqrstuvwxyz012345';
+  fs.writeFileSync(path.join(dir, '.env'), `API_TOKEN=${secret}\n`);
+
+  const out = execFileSync(process.execPath, [POST], {
+    input: JSON.stringify({
+      cwd: dir,
+      tool_name: 'Bash',
+      tool_output: { stdout: `token=${secret}`, stderr: '', exitCode: 0 },
+    }),
+    encoding: 'utf8',
+  });
+
+  const res = JSON.parse(out).hookSpecificOutput;
+  const updated = res.updatedOutput;
+  assert.equal(typeof updated, 'object', 'a forma do objeto deveria ser preservada');
+  assert.equal(updated.exitCode, 0, 'campos não-texto passam intactos');
+  assert.ok(!JSON.stringify(updated).includes(secret), 'o valor deveria ter sumido');
+  assert.ok(updated.stdout.includes('wardenv:API_TOKEN'), 'stdout deveria estar mascarado');
+});

@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.1.4 — 2026-09-22
+
+Five gaps found in an audit, all inside the stated threat model: a helpful agent taking
+the obvious path. Each one was confirmed by running the real hooks before being fixed.
+
+### Fixed
+
+- **`MultiEdit` let any secret through.** The tool was in the hook matcher and in the
+  write-guard set, so it looked covered. But the hook only read scalar fields
+  (`content`, `new_string`) and MultiEdit carries its text in `edits[].new_string`. The
+  body always arrived empty. A secret that `Edit` blocked, `MultiEdit` allowed. Fixed: the
+  hook now reads every `edits[]` entry.
+- **A quoted path was not a secret.** `cat ".env"` and `cat '.env'` were allowed.
+  `stripLiterals` removed every quoted string before analysis to avoid false positives
+  like `git commit -m "fix .env parsing"`, and a comment claimed the target still survived
+  as a token. It didn't. Fixed: a literal that is exactly a secret path is kept as a
+  target; a phrase that only mentions the name is still treated as data.
+  `classifyPath` also strips surrounding quotes and whitespace now.
+- **Inline interpreter scripts read secrets unchecked.** `node -e "...readFileSync('.env')"`
+  and `python -c "open('.env').read()"` returned `allow`, not even `redact`, because the
+  path lives inside a string. Fixed: one-liners for node, deno, bun, python, ruby, perl,
+  php and Rscript are blocked when they open a secret path. A literal that is only data
+  (`x=['secrets/a']`) still passes.
+- **Structured tool output came back as a JSON string.** When `tool_output` was an object
+  like `{stdout, stderr}` and a redaction fired, PostToolUse returned the whole object
+  serialized as one string. Fixed: fields are redacted in place and the shape is kept.
+  Hit counts are also deduplicated, so a secret seen in both stdout and stderr counts once.
+- **Audit log rotation dropped history.** Only one rotated file (`.1`) was kept, and each
+  rotation overwrote it, so the trail stopped at about 4MB. Fixed: five rotated files are
+  kept.
+
+### Added
+
+- 8 new tests, 43 total. Each fix has a leak test, and the quoted-path, one-liner and
+  MultiEdit fixes each have a matching friction test so the fix can't bring back a false
+  positive.
+
 ## 0.1.3 — 2026-09-21
 
 Two real security/usability bugs, both found from a live false report: `wardenv unlock`
