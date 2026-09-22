@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.5 — 2026-09-22
+
+### Fixed
+
+- **An agent could upload a secret file over the network.** `curl -F f=@.env`,
+  `curl -d @.env`, `curl -T .env`, `wget --post-file=.env`, `http POST url @.env`,
+  `nc host port < .env` and `Invoke-WebRequest -InFile .env` all returned `allow` or
+  `redact`. Redaction was no protection: it cleans what the agent sees coming back, and the
+  file had already left. Fixed: a network client whose upload source is a secret file is
+  blocked. `curl -o .env`, which writes into the file, is unchanged.
+- **An unlock can't be spent on an upload.** A `wardenv unlock` grant lets the agent read a
+  value. It does not let the agent send the file anywhere, and a denied upload doesn't
+  consume the grant.
+
+### Added
+
+- 3 new tests, 46 total.
+
 ## 0.1.4 — 2026-09-22
 
 Five gaps found in an audit, all inside the stated threat model: a helpful agent taking

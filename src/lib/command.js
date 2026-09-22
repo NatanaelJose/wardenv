@@ -66,6 +66,34 @@ const INLINE_SCRIPT = /(?:^|[\s|;&])(?:node|deno|bun|python[0-9.]*|python3|ruby|
 // de atrito que já existia para esse caso.
 const SCRIPT_READ = /\b(?:readFileSync|readFile|createReadStream|open|openSync|File\.read|IO\.read|file_get_contents|read_text|readlines|load)\s*\(/i;
 
+// Cliente de rede enviando um arquivo: `curl -F f=@.env`, `wget --post-file=.env`.
+// Aqui a redação não serve de rede de proteção: ela limpa o que o agente VÊ de
+// volta, e o arquivo já saiu pela rede antes disso. Por isso é bloqueio.
+const UPLOADERS = [
+  'curl', 'wget', 'http', 'https', 'xh', 'nc', 'ncat', 'netcat', 'socat', 'telnet',
+  'invoke-webrequest', 'invoke-restmethod', 'iwr', 'irm',
+];
+
+// Só conta o segredo que é a ORIGEM do envio. `curl -o .env` grava NO arquivo
+// e continua passando.
+const UPLOAD_SOURCES = [
+  // curl -F f=@x, -d @x, --data-urlencode c@x, httpie @x; -F f=<x, nc host < x
+  /[@<]\s*(["']?)([^\s"'@<;|&]+)\1/g,
+  // curl -T x / --upload-file x, wget --post-file=x / --body-file=x, pwsh -InFile x
+  /(?:^|\s)(?:-T|--upload-file|--post-file|--body-file|-InFile)(?:\s+|=)(["']?)([^\s"']+)\1/gi,
+];
+
+function findUploadSource(seg) {
+  for (const re of UPLOAD_SOURCES) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(seg))) {
+      if (classifyPath(m[2]).secret) return m[2];
+    }
+  }
+  return null;
+}
+
 function stripQuotes(tok) {
   return tok.replace(/^['"]|['"]$/g, '');
 }
@@ -187,6 +215,19 @@ function analyzeCommand(cmd) {
   // precisa ser procurado no texto CRU, antes de `stripLiterals`. Cada segmento
   // é testado separadamente para não confundir `node -e "..."` com um `cat .env`
   // que venha depois de um `&&`.
+  // Envio de segredo pela rede. Também no texto cru: `-F "f=@.env"` entre aspas
+  // seria apagado por stripLiterals.
+  for (const seg of raw.split(/&&|\|\||[;|]/)) {
+    const bin = (tokenize(seg)[0] || '').toLowerCase().split('/').pop().split('\\').pop();
+    if (!UPLOADERS.includes(bin)) continue;
+    const src = findUploadSource(seg);
+    if (src) {
+      // O unlock é para o agente LER o valor, não para despachar o arquivo
+      // para fora. Um grant ativo não libera este bloqueio.
+      return { action: 'block', reason: `${bin} uploads ${src}`, token: src, upload: true };
+    }
+  }
+
   for (const seg of raw.split(/&&|\|\||[;|]/)) {
     if (!INLINE_SCRIPT.test(seg) || !SCRIPT_READ.test(seg)) continue;
     const found = findSecretPathToken(seg.replace(/["']/g, ' '));

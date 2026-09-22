@@ -6,7 +6,7 @@
 
 [![npm](https://img.shields.io/npm/v/wardenv?color=black)](https://www.npmjs.com/package/wardenv)
 [![license](https://img.shields.io/badge/license-MIT-black)](./LICENSE)
-[![tests](https://img.shields.io/badge/tests-43%20passing-black)](./test/wardenv.test.js)
+[![tests](https://img.shields.io/badge/tests-46%20passing-black)](./test/wardenv.test.js)
 [![deps](https://img.shields.io/badge/dependencies-0-black)](./package.json)
 
 </div>
@@ -262,7 +262,7 @@ what makes adapters for other runtimes straightforward.
 npm test
 ```
 
-43 tests. The engine suite covers two classes, and the second matters as much as the
+46 tests. The engine suite covers two classes, and the second matters as much as the
 first:
 
 - Leak (false negative): a secret got through. A security failure.

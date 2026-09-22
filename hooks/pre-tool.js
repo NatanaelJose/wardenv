@@ -90,6 +90,16 @@ process.stdin.on('end', () => {
       const cmd = ti.command || '';
       const verdict = analyzeCommand(cmd);
 
+      if (verdict.action === 'block' && verdict.upload) {
+        log({ event: 'block-upload', tool, command: cmd, reason: verdict.reason, agent, cwd });
+        deny(
+          `wardenv: command sends a secret file over the network (${verdict.reason}).`,
+          'Secret files never leave the machine through an agent command, and ' +
+            'wardenv unlock does not change that. If a request needs a credential, ' +
+            'reference it by name from the environment instead of uploading the file.'
+        );
+      }
+
       if (verdict.action === 'block') {
         // O unlock granted via `wardenv unlock <file>` precisa valer aqui
         // também — não só para a tool Read. Sem isto, `wardenv unlock .env`
