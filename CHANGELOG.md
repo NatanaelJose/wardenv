@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+Post-merge audit of the multi-agent PR found and fixed 3 issues before any public
+announcement:
+
+- **`wardenv install codex` had stopped refusing on Codex versions with no tool hooks.**
+  The hard refusal that existed before multi-agent support was lost in the refactor:
+  installing on Codex 0.116–0.128 (no `PreToolUse`/`PostToolUse` at all) printed
+  `🔒 installed` with only an easy-to-miss `⚠ UNVERIFIED` note, exit code 0, while the
+  guard never actually ran. Fixed: the installer now checks the installed Codex's version
+  and refuses outright below 0.129.
+- **`wardenv uninstall copilot` didn't remove the hook.** It called the removal function
+  written for the nested `{matcher, hooks:[...]}` layout that Claude/Gemini/Codex use;
+  Copilot's own hooks file is flat (each array entry *is* the hook), so the function
+  silently matched nothing and the wardenv entries stayed registered while the command
+  printed success. Fixed: uninstall now uses the flat-layout removal (shared with Cursor).
+- **`wardenv install`/`uninstall` always exited 0**, even when the underlying `install.js`
+  process failed — including the Codex refusal above. `src/cli.js` spawned it but never
+  propagated its exit code. Fixed: the CLI now exits with the child process's actual code.
+- **Gemini's `read_many_files` didn't recognize a glob that targets a secret.** `include`
+  accepts patterns like `*.env`, not just literal paths; comparing the glob string itself
+  against known secret filenames never matched. Fixed: a glob is now checked against
+  secret-shaped filenames it would actually expand to.
+- 3 new tests, 91 total.
+
 Hooks split into a per-agent adapter (`hooks/adapters/<agent>.js`) plus one shared policy
 (`hooks/decide.js`), so a new agent means writing one adapter, not touching the guard
 logic. Install and test `wardenv install gemini|cursor|codex|copilot`. None of these four

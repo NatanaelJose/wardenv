@@ -140,8 +140,9 @@ Two things worth knowing before you rely on any of the unverified adapters:
 - **Codex 0.116.0 has no pre/post-tool hook at all** (confirmed against a real session: it
   read a `.env`, uploaded it, and ran `wardenv unlock` on itself, and wardenv never saw any
   of it). Tool hooks landed in 0.129, with `updatedInput` rewrites needed by other tools
-  arriving in 0.131. If you're on an older Codex, `wardenv uninstall codex` removes any
-  stale entry and `wardenv install codex` won't overwrite it with a guard that can't fire.
+  arriving in 0.131. `wardenv install codex` checks your installed Codex's version and
+  refuses outright below 0.129, instead of printing "installed" over a guard that can't
+  fire; `wardenv uninstall codex` still removes any stale entry from an older install.
 - **Copilot CLI on Windows spawns hooks through `pwsh.exe`** (PowerShell 7), not the
   built-in `powershell.exe`. If it's missing, the installer refuses instead of registering
   a hook that silently never runs — install it with `winget install Microsoft.PowerShell`

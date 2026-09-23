@@ -38,21 +38,25 @@ function help() {
 
 switch (cmd) {
   case 'install': {
-    require('child_process').spawnSync(
+    // O exit code do filho precisa chegar até quem chamou `wardenv install`:
+    // sem propagar, `install codex` numa versão sem tool hooks recusava e
+    // imprimia o erro, mas a CLI ainda saía com 0 — script nenhum detectava
+    // a falha.
+    const r = require('child_process').spawnSync(
       process.execPath,
       [path.join(__dirname, 'install.js'), ...rest],
       { stdio: 'inherit' }
     );
-    break;
+    process.exit(r.status ?? 1);
   }
 
   case 'uninstall': {
-    require('child_process').spawnSync(
+    const r = require('child_process').spawnSync(
       process.execPath,
       [path.join(__dirname, 'install.js'), '--uninstall', ...rest],
       { stdio: 'inherit' }
     );
-    break;
+    process.exit(r.status ?? 1);
   }
 
   case 'status': {

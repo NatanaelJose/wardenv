@@ -79,11 +79,28 @@ test('cli: unlock recusa sem terminal interativo', () => {
   assert.equal(isUnlocked(dir, '.env'), false, 'nenhum grant deveria ter sido criado');
 });
 
-test('install: Codex (agente não verificado) instala e reinstala sem duplicar; uninstall preserva hook de terceiro', () => {
-  // Codex 0.116 (o testado antes) não tem hooks de ferramenta; 0.129+ tem, mas
-  // sem uma sessão real ainda não foi verificado ponta a ponta — daí o aviso
-  // UNVERIFIED. O que este teste garante é o instalador em si: não duplica
-  // entrada, e o uninstall não some com hooks de outra ferramenta.
+// Monta um comando `codex` fake no PATH do processo filho, que só responde a
+// `--version`, para o precheck do instalador ver a versão que o teste quer —
+// independente de qual Codex esteja de fato instalado nesta máquina.
+function withFakeCodexVersion(home, version, run) {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const bin = path.join(home, 'fakebin');
+  fs.mkdirSync(bin, { recursive: true });
+  const script = process.platform === 'win32'
+    ? `@echo off\r\necho codex-cli ${version}\r\n`
+    : `#!/bin/sh\necho "codex-cli ${version}"\n`;
+  const file = path.join(bin, process.platform === 'win32' ? 'codex.cmd' : 'codex');
+  fs.writeFileSync(file, script);
+  if (process.platform !== 'win32') fs.chmodSync(file, 0o755);
+  return run({ ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` });
+}
+
+test('install: Codex com hooks de ferramenta (0.129+) instala, reinstala sem duplicar; uninstall preserva hook de terceiro', () => {
+  // Sem uma sessão real ainda não foi verificado ponta a ponta — daí o aviso
+  // UNVERIFIED. O que este teste garante é o instalador em si, numa versão
+  // que TEM tool hooks: não duplica entrada, e o uninstall não some com
+  // hooks de outra ferramenta.
   const fs = require('node:fs');
   const os = require('node:os');
   const { spawnSync } = require('node:child_process');
@@ -100,26 +117,56 @@ test('install: Codex (agente não verificado) instala e reinstala sem duplicar; 
 
   // os.homedir() é trocado antes de carregar o instalador: no Windows ele não
   // obedece HOME/USERPROFILE, e sem isto o teste gravaria na config real.
-  const runInstall = (args) => spawnSync(process.execPath, ['-e', [
+  const runInstall = (args, env) => spawnSync(process.execPath, ['-e', [
     `require('os').homedir = () => ${JSON.stringify(home)};`,
     `process.argv = [process.execPath, 'install.js', ...${JSON.stringify(args)}];`,
     `require(${JSON.stringify(INSTALL)});`,
-  ].join('\n')], { encoding: 'utf8' });
+  ].join('\n')], { encoding: 'utf8', env: env || process.env });
 
   const hooked = (f) => /wardenv[\\/]+hooks/i.test(fs.readFileSync(f, 'utf8'));
 
-  assert.equal(runInstall([]).status, 0);
-  assert.ok(hooked(path.join(home, '.claude', 'settings.json')), 'Claude Code deveria receber o hook');
-  assert.ok(hooked(codexFile), 'Codex deveria receber o hook (não verificado, mas instalado)');
-  assert.match(fs.readFileSync(codexFile, 'utf8'), /third-party/, 'hook de terceiro deveria sobreviver à instalação');
+  withFakeCodexVersion(home, '0.156.0', (env) => {
+    assert.equal(runInstall([], env).status, 0);
+    assert.ok(hooked(path.join(home, '.claude', 'settings.json')), 'Claude Code deveria receber o hook');
+    assert.ok(hooked(codexFile), 'Codex 0.156 deveria receber o hook (não verificado, mas instalado)');
+    assert.match(fs.readFileSync(codexFile, 'utf8'), /third-party/, 'hook de terceiro deveria sobreviver à instalação');
 
-  const beforeReinstall = (fs.readFileSync(codexFile, 'utf8').match(/wardenv[\\/]+hooks/gi) || []).length;
-  const explicit = runInstall(['codex']);
-  assert.equal(explicit.status, 0, 'reinstalar não deveria falhar');
-  const afterReinstall = (fs.readFileSync(codexFile, 'utf8').match(/wardenv[\\/]+hooks/gi) || []).length;
-  assert.equal(afterReinstall, beforeReinstall, 'reinstalar não deveria duplicar a entrada');
+    const beforeReinstall = (fs.readFileSync(codexFile, 'utf8').match(/wardenv[\\/]+hooks/gi) || []).length;
+    const explicit = runInstall(['codex'], env);
+    assert.equal(explicit.status, 0, 'reinstalar não deveria falhar');
+    const afterReinstall = (fs.readFileSync(codexFile, 'utf8').match(/wardenv[\\/]+hooks/gi) || []).length;
+    assert.equal(afterReinstall, beforeReinstall, 'reinstalar não deveria duplicar a entrada');
 
-  assert.equal(runInstall(['codex', '--uninstall']).status, 0);
-  assert.equal(hooked(codexFile), false, 'entrada antiga do wardenv deveria sair');
-  assert.match(fs.readFileSync(codexFile, 'utf8'), /third-party/, 'hook de terceiro deveria ficar');
+    assert.equal(runInstall(['codex', '--uninstall'], env).status, 0);
+    assert.equal(hooked(codexFile), false, 'entrada antiga do wardenv deveria sair');
+    assert.match(fs.readFileSync(codexFile, 'utf8'), /third-party/, 'hook de terceiro deveria ficar');
+  });
+});
+
+test('install: Codex sem hooks de ferramenta (< 0.129) recusa a instalação em vez de fingir proteção', () => {
+  // Regressão do achado de auditoria: o instalador antigo recusava de vez
+  // quando o Codex não tinha tool hooks. Isso foi perdido na refatoração
+  // multi-agente — install "funcionava" e imprimia sucesso, mas o hook nunca
+  // rodava porque a versão instalada não dispara PreToolUse/PostToolUse.
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const { spawnSync } = require('node:child_process');
+  const INSTALL = path.join(__dirname, '..', 'src', 'install.js');
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-install-old-codex-'));
+  fs.mkdirSync(path.join(home, '.codex'));
+
+  const runInstall = (args, env) => spawnSync(process.execPath, ['-e', [
+    `require('os').homedir = () => ${JSON.stringify(home)};`,
+    `process.argv = [process.execPath, 'install.js', ...${JSON.stringify(args)}];`,
+    `require(${JSON.stringify(INSTALL)});`,
+  ].join('\n')], { encoding: 'utf8', env: env || process.env });
+
+  withFakeCodexVersion(home, '0.116.0', (env) => {
+    const r = runInstall(['codex'], env);
+    assert.equal(r.status, 1, 'install codex numa versão sem tool hooks deveria recusar');
+    assert.match(r.stderr, /0\.129|tool hooks/i);
+    const codexFile = path.join(home, '.codex', 'hooks.json');
+    assert.ok(!fs.existsSync(codexFile), 'nada deveria ter sido escrito');
+  });
 });

@@ -40,6 +40,20 @@ function onPath(bin) {
   return r.status === 0;
 }
 
+/** `<bin> --version` é pelo menos `major.minor.patch`? undefined se não der para checar. */
+function versionAtLeast(bin, major, minor) {
+  // No Windows um binário instalado via npm é um .cmd; sem shell:true o
+  // spawnSync não resolve a extensão pelo PATH e falha silenciosamente. `bin`
+  // só chega aqui como literal fixo no código (nunca de fora), então montar
+  // a linha como string é seguro apesar do aviso de depreciação do Node.
+  const r = require('child_process').spawnSync(`${bin} --version`, { encoding: 'utf8', shell: WIN });
+  if (r.status !== 0 || !r.stdout) return undefined;
+  const m = r.stdout.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return undefined;
+  const [, a, b] = m.map(Number);
+  return a !== major ? a > major : b >= minor;
+}
+
 /**
  * Alvos suportados.
  *
@@ -112,10 +126,21 @@ const TARGETS = {
       PostToolUse: ['^(Bash|mcp__.*)$', hookCmd('post-tool.js', 'codex')],
     },
     timeout: 5,
+    // Tool hooks (PreToolUse/PostToolUse) só existem a partir do Codex 0.129;
+    // versões antigas (esta máquina tinha 0.116) não têm NENHUM evento antes
+    // ou depois de uma tool. Instalar mesmo assim imprimia "🔒 installed" e
+    // deixava o .env exposto — o instalador agora recusa de vez, como fazia
+    // antes desta integração existir.
+    precheck: () =>
+      versionAtLeast('codex', 0, 129) === false
+        ? 'Codex CLI tool hooks (PreToolUse/PostToolUse) need 0.129 or newer. Your version\n' +
+          '   has none at all, so wardenv would never be called and .env stays exposed.\n' +
+          '   Update with: npm install -g @openai/codex@latest'
+        : null,
     note:
-      'Needs Codex 0.129 or newer (0.116 has no tool hooks at all; the desktop app\n' +
-      '   ships its own newer CLI). Codex runs a new hook only after you trust it:\n' +
-      '   open /hooks in Codex and approve the wardenv entries.',
+      'Checked against the Codex CLI source, not yet against a live session. Codex runs\n' +
+      '   a new hook only after you trust it: open /hooks in Codex and approve the\n' +
+      '   wardenv entries, or every step below silently no-ops.',
   },
   copilot: {
     label: 'GitHub Copilot CLI',
@@ -229,8 +254,13 @@ function installOwn(target) {
 function uninstallOwn(target) {
   // O arquivo é do wardenv, mas só apaga se ainda for: nunca remove algo que
   // o usuário tenha reaproveitado com hooks próprios.
+  //
+  // Layout 'own' é PLANO como o do Cursor — cada entrada do array JÁ é o hook
+  // ({type, bash, powershell, ...}), sem "hooks:[...]" aninhado. stripWardenv
+  // olha para dentro de group.hooks[] e nunca encontra nada nesse formato: a
+  // limpeza virava um no-op silencioso, então usa a mesma função do Cursor.
   const cfg = loadConfig(target.file);
-  stripWardenv(cfg.hooks || {});
+  stripWardenvCursor(cfg.hooks || {});
   const left = Object.values(cfg.hooks || {}).some((v) => Array.isArray(v) && v.some((h) => !isWardenv(h)));
   if (left) writeAtomic(target.file, JSON.stringify(cfg, null, 2));
   else fs.unlinkSync(target.file);
