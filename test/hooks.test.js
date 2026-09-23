@@ -225,3 +225,17 @@ test('PowerShell: `Get-Content .env` também mostra a estrutura das chaves', () 
   assert.ok(isDenied(res));
   assert.match(res.hookSpecificOutput.additionalContext, /SECRET_KEY=<set, 16 chars>/);
 });
+
+test('Bash: `rtk cat .env` mostra a mesma estrutura de chaves que `cat .env` sem o wrapper', () => {
+  // Os dois fixes (ver através de rtk/sudo/env, e listar a estrutura no
+  // shell) mexem no mesmo caminho de código por ângulos diferentes — um no
+  // tokenizer, o outro no texto do deny. Nada garante sozinho que continuam
+  // combinando: sem este teste, um dos dois podia regredir silenciosamente
+  // só quando usado junto com o outro.
+  const dir = makeSandbox('shell-structure-rtk');
+  const direct = runHook({ cwd: dir, tool_name: 'Bash', tool_input: { command: 'cat .env' } });
+  const wrapped = runHook({ cwd: dir, tool_name: 'Bash', tool_input: { command: 'rtk cat .env' } });
+  assert.ok(isDenied(wrapped));
+  assert.match(wrapped.hookSpecificOutput.additionalContext, /SECRET_KEY=<set, 16 chars>/);
+  assert.deepStrictEqual(wrapped, direct, 'rtk na frente não deveria mudar a resposta em nada');
+});
