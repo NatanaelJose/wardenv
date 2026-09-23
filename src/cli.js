@@ -23,8 +23,8 @@ function die(msg) {
 function help() {
   console.log(`wardenv — a warden for your env
 
-  wardenv install             register hooks in Claude Code
-  wardenv uninstall           remove hooks
+  wardenv install [agent]     register hooks (claude, gemini, codex, copilot)
+  wardenv uninstall [agent]   remove hooks
   wardenv status              what's guarded here, and any open passes
   wardenv keys [file]         key NAMES from .env — never the values
   wardenv unlock <file> [-n N] [-t MIN]
@@ -40,7 +40,7 @@ switch (cmd) {
   case 'install': {
     require('child_process').spawnSync(
       process.execPath,
-      [path.join(__dirname, 'install.js')],
+      [path.join(__dirname, 'install.js'), ...rest],
       { stdio: 'inherit' }
     );
     break;
@@ -49,7 +49,7 @@ switch (cmd) {
   case 'uninstall': {
     require('child_process').spawnSync(
       process.execPath,
-      [path.join(__dirname, 'install.js'), '--uninstall'],
+      [path.join(__dirname, 'install.js'), '--uninstall', ...rest],
       { stdio: 'inherit' }
     );
     break;

@@ -168,6 +168,11 @@ const SELF_DISARM = [
   /(^|[\s/\\])\.wardenv([\\/]|\b)/i,      // mexer no estado (grants.json, audit.jsonl)
   // Reescrever a config do agente para arrancar o wardenv de lá.
   /(>|>>|tee|Set-Content|Out-File)[^|;&]*(settings|hooks)\.json/i,
+  // Apagar ou mover a config de hooks de um agente. O Copilot guarda o hook do
+  // wardenv num arquivo só dele (~/.copilot/hooks/wardenv.json): removê-lo é
+  // desarmar sem editar nada.
+  /(^|\s)(rm|del|erase|mv|move|ren|rename|Remove-Item|Move-Item|Rename-Item)\b[^|;&]*[\\/]\.(claude|codex|gemini|cursor|copilot)[\\/][^|;&]*(settings(\.local)?|hooks)(\.json|[\\/]|\s|$)/i,
+  /(>|>>|tee|Set-Content|Out-File)[^|;&]*[\\/]\.copilot[\\/]+hooks[\\/]/i,
 ];
 
 /** Testa desarme em cada segmento, para pegar `foo && wardenv unlock`. */

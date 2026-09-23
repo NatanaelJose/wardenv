@@ -53,10 +53,13 @@ takes an OS boundary: a separate user, or a secret manager the agent can't reach
 When wardenv runs from a git checkout (you're developing it), its own `src/` and
 `hooks/` are left editable on purpose. Install from npm to get that protection.
 
-**7. Codex CLI is not supported.**
-Tested on codex-cli 0.116.0: it only runs `SessionStart`, `UserPromptSubmit` and `Stop`
-hooks, with nothing before or after a tool, so wardenv is never called there.
-`wardenv install codex` refuses rather than claiming protection it can't give.
+**7. Gemini, Cursor, Codex and Copilot CLI are unverified.**
+The adapters for these four are built from each agent's source or official docs and
+covered by `test/adapters.test.js`, but none has been run against a live agent session
+yet — only Claude Code has. See the agent support table in `README.md` for what each one
+can and can't do, and for the known gaps (Codex CLI before 0.129 has no tool hooks at all;
+Copilot CLI on Windows needs PowerShell 7 to run hooks; Cursor and Gemini can't rewrite a
+tool's output, only deny it).
 
 ## Reporting a vulnerability
 
