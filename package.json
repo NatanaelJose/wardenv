@@ -1,6 +1,6 @@
 {
   "name": "wardenv",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Keep your .env out of the AI context. Blocks secret reads, redacts leaked values in tool output, and logs every unlock. Hooks for coding agents.",
   "keywords": [
     "claude-code",

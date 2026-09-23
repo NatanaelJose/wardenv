@@ -1,39 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-09-23
 
-- **`cat .env` (and any shell read) never showed the key structure the README's own
-  example promises.** Only the native `Read` tool did. A shell read — `cat`, `grep`,
-  `Get-Content`, the most common way anyone actually reads a file — got a generic "this
-  would expose credentials" instead of `SECRET_KEY=<set, 16 chars>` plus the `wardenv
-  unlock` suggestion. Found live testing a Claude Code session. Fixed: both paths now
-  share the same key-listing logic.
-- 2 new tests, 99 total.
+Adds support for four more agents — Gemini CLI, Cursor, Codex CLI, GitHub Copilot CLI —
+alongside the existing Claude Code one. Hooks split into a per-agent adapter
+(`hooks/adapters/<agent>.js`) plus one shared policy (`hooks/decide.js`), so a new agent
+means writing one adapter, not touching the guard logic. Install and test with
+`wardenv install gemini|cursor|codex|copilot`.
 
-A live Codex Desktop test session found two more real bypasses, both fixed:
+Only Claude Code is fully `✅ verified end to end`. Codex CLI is close: a live 0.156.1
+Desktop session blocked every one of 8 real attack/friction scenarios. Gemini, Cursor and
+Copilot CLI are checked against source/docs and covered by `test/adapters.test.js`, not
+yet run live — see the agent support table in `README.md` for exactly what's verified.
 
-- **A prompt-level wrapper rule bypassed detection entirely.** A project instructing the
-  agent to always prefix shell commands with some proxy (found live via an `AGENTS.md` →
-  `RTK.md` chain telling Codex to run everything through `rtk`) made `rtk cat .env` read
-  as "block" downgraded to "redact" (mentions, not a read), and `rtk curl -F f=@.env ...`
-  — the most critical exfiltration case — read as fully allowed. The upload/read/self-disarm
-  checks all took "the first token" as the real binary; with a wrapper in front, that token
-  was `rtk`, not `cat`/`curl`. `sudo`/`doas` had the identical gap independent of any RTK.md.
-  Fixed: `rtk`, `sudo`, `doas` and `env VAR=value` are now recognized and skipped to find
-  the actual binary, in both the tokenizer and the self-disarm patterns.
-- **`curl.exe` didn't match the uploader list.** Only `curl` did; Codex commonly invokes
-  `curl.exe` explicitly (to avoid a PowerShell alias), and `curl.exe -F f=@.env ...` was
-  fully allowed. Fixed: the Windows executable extension (`.exe`/`.cmd`/`.bat`) is now
-  stripped before matching a binary name, shared between the uploader and reader checks.
-- 5 new tests, 97 total.
-- Documented, not changed: a hook that crashes or times out fails open by design (a
-  security tool that can freeze an agent's session over its own bug gets uninstalled), and
-  Codex's per-hook trust hash is invalidated by every reinstall (the command changes, so
-  the approved hash no longer matches) — `wardenv install codex`'s printed note now says to
-  reopen `/hooks` and re-approve after every reinstall.
+This work went through an unusually thorough hardening pass before release: a code audit
+after the initial multi-agent merge, then two live test sessions (Codex Desktop, Claude
+Code) that each found a real bypass the audit and the simulated-payload tests had missed.
+That pattern — live testing catching what code review and unit tests didn't — is worth
+knowing before trusting any "unverified" adapter for anything real.
 
-Post-merge audit of the multi-agent PR found and fixed 3 issues before any public
-announcement:
+### Fixed
 
 - **`wardenv install codex` had stopped refusing on Codex versions with no tool hooks.**
   The hard refusal that existed before multi-agent support was lost in the refactor:
@@ -64,15 +50,35 @@ announcement:
   with `&` for Codex, Cursor, and Copilot's `powershell` field (its `bash` field is
   unaffected). Confirmed live: the exact registered command now runs correctly under
   PowerShell.
-- 4 new tests, 92 total.
+- **A prompt-level wrapper rule bypassed detection entirely.** A project instructing the
+  agent to always prefix shell commands with some proxy (found live via a real
+  `AGENTS.md` → `RTK.md` chain telling Codex to run everything through `rtk`) made
+  `rtk cat .env` read as "block" downgraded to "redact" (mentions, not a read), and
+  `rtk curl -F f=@.env ...` — the most critical exfiltration case — read as fully allowed.
+  The upload/read/self-disarm checks all took "the first token" as the real binary; with a
+  wrapper in front, that token was `rtk`, not `cat`/`curl`. `sudo`/`doas` had the identical
+  gap independent of any RTK.md. Fixed: `rtk`, `sudo`, `doas` and `env VAR=value` are now
+  recognized and skipped to find the actual binary, in both the tokenizer and the
+  self-disarm patterns.
+- **`curl.exe` didn't match the uploader list.** Only `curl` did; Codex commonly invokes
+  `curl.exe` explicitly (to avoid a PowerShell alias), and `curl.exe -F f=@.env ...` was
+  fully allowed. Fixed: the Windows executable extension (`.exe`/`.cmd`/`.bat`) is now
+  stripped before matching a binary name, shared between the uploader and reader checks.
+- **`cat .env` (and any shell read) never showed the key structure the README's own
+  example promises.** Only the native `Read` tool did. A shell read — `cat`, `grep`,
+  `Get-Content`, the most common way anyone actually reads a file — got a generic "this
+  would expose credentials" instead of `SECRET_KEY=<set, 16 chars>` plus the `wardenv
+  unlock` suggestion. Found live testing a Claude Code session. Fixed: both paths now
+  share the same key-listing logic.
+- **`versionAtLeast()` (added for the Codex version check above) never worked outside
+  Windows.** `spawnSync` without `shell:true` treats a command string as one literal
+  executable name and always fails — on any platform, not just Windows. The precheck
+  silently never triggered on Linux/macOS. Caught by CI failing across the whole
+  ubuntu/macOS matrix.
+- 9 new tests since #1's merge (91 → 100), all passing on Windows, Linux and macOS across
+  Node 18/20/22.
 
-Hooks split into a per-agent adapter (`hooks/adapters/<agent>.js`) plus one shared policy
-(`hooks/decide.js`), so a new agent means writing one adapter, not touching the guard
-logic. Install and test `wardenv install gemini|cursor|codex|copilot`. None of these four
-has been run against a live agent session yet — the adapters are built from each agent's
-source or official docs and covered by `test/adapters.test.js`, and the installer was
-exercised end to end, but see the agent support table in `README.md` for exactly what's
-verified and what isn't before relying on any of them for real.
+## 0.1.6 — 2026-09-22
 
 An agent could grant itself an unlock. Found by testing Codex against a real session:
 it ran `wardenv unlock .env` and got a working grant. The same holes were open in Claude
