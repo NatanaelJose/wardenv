@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+An agent could grant itself an unlock. Found by testing Codex against a real session:
+it ran `wardenv unlock .env` and got a working grant. The same holes were open in Claude
+Code.
+
+### Fixed
+
+- **`wardenv unlock` now needs a human at a terminal.** The hook blocked the command by
+  name, but `node …/cli.js unlock`, PowerShell's `& wardenv unlock`, `cmd /c`,
+  `wardenv.cmd`, `eval` and `Start-Process` all ran it anyway. An agent's shell has no
+  TTY, so the CLI now refuses without one, and asks you to type the file name back
+  before creating the grant. The confirmation also covers `Start-Process`, which opens a
+  window with a terminal but nobody at it.
+- **Write and Edit could disarm wardenv.** The self-disarm rule only looked at shell
+  commands. A Write to `~/.wardenv/grants.json` forged a grant; an Edit to
+  `~/.claude/settings.json` could drop the hook, point it at a missing file, empty its
+  matcher or set `disableAllHooks`. These are now blocked. The config check applies the
+  edit and compares wardenv's hooks before and after, so renaming just `pre-tool.js`
+  is caught too. When wardenv is installed from npm, its own `src/` and `hooks/` are
+  protected as well; a git checkout stays editable so it can be developed.
+- **The hook blocks the shell forms of unlock directly**, as a second layer behind the
+  terminal check.
+- **Codex is no longer installed.** codex-cli 0.116.0 only fires `SessionStart`,
+  `UserPromptSubmit` and `Stop`, with no tool hook, so wardenv never ran there while the
+  installer printed "installed". `wardenv install` skips Codex, `wardenv install codex`
+  refuses, and `wardenv uninstall codex` removes old entries.
+
+### Added
+
+- `unlock-granted` and `unlock-refused` audit events. Only the use of a grant was logged
+  before, so there was no record of who created one.
+- 6 new tests, 52 total.
+
 ## 0.1.5 — 2026-09-22
 
 ### Fixed

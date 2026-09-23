@@ -406,3 +406,105 @@ test('atrito: cliente de rede sem segredo como origem continua liberado', () => 
   // Gravar NO .env não é envio: segue o caminho de menção, como antes.
   assert.notEqual(analyzeCommand(['curl -o ', E, ' ', U].join('')).action, 'block');
 });
+
+// ------------------------------------------ auto-desarme por desvio
+
+test('auto-desarme: desvios da forma direta também são bloqueados', () => {
+  // A regra exigia `wardenv` em posição de comando sem nada antes. Todos estes
+  // passavam: o operador `&` do PowerShell, `cmd /c`, o shim `.cmd` do npm,
+  // a CLI chamada pelo caminho e a biblioteca de grants carregada direto.
+  const W = ['ward', 'env'].join('');
+  const E = ['.e', 'nv'].join('');
+  const cases = [
+    ['& ', W, ' unlock ', E].join(''),
+    ['cmd /c ', W, ' unlock ', E].join(''),
+    [W, '.cmd unlock ', E].join(''),
+    [W, '.ps1 unlock ', E].join(''),
+    ['eval \'', W, ' unlock ', E, '\''].join(''),
+    ['node C:/dev/', W, '/src/cli.js unlock ', E].join(''),
+    ['node "C:\\npm\\node_modules\\', W, '\\src\\cli.js" unlock ', E].join(''),
+    ['node -e "require(\'C:/x/', W, '/src/lib/unlock\').grant(process.cwd(),\'', E, '\')"'].join(''),
+    ['Start-Process ', W, ' -ArgumentList \'unlock\',\'', E, '\''].join(''),
+    // Forjar o TTY e chamar a CLI por dentro de um one-liner.
+    ['echo ', E, ' | node -e "process.stdin.isTTY=true;process.stdout.isTTY=true;',
+      'process.argv.push(\'unlock\',\'', E, '\');require(\'C:/npm/', W, '/src/cli.js\')"'].join(''),
+  ];
+  for (const c of cases) {
+    assert.equal(analyzeCommand(c).action, 'block', `deveria bloquear: ${c}`);
+  }
+});
+
+test('atrito: usar o wardenv sem desarmar continua liberado', () => {
+  const W = ['ward', 'env'].join('');
+  const ok = [
+    [W, ' lock'].join(''),
+    [W, ' status'].join(''),
+    ['& ', W, ' check "npm run build"'].join(''),
+    ['node C:/dev/', W, '/src/cli.js status'].join(''),
+    ['git commit -m "docs: explain ', W, ' install"'].join(''),
+  ];
+  for (const c of ok) {
+    assert.equal(analyzeCommand(c).action, 'allow', `falso positivo: ${c}`);
+  }
+});
+
+// ------------------------------- auto-desarme pelas tools de escrita
+
+test('auto-desarme: escrita no estado, no código ou na config do agente', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const pathMod = require('node:path');
+  const { checkWrite } = require('../src/lib/selfguard');
+
+  // Estado: grant forjado.
+  const grants = pathMod.join(os.homedir(), '.wardenv', 'grants.json');
+  assert.equal(checkWrite({ filePath: grants, body: '{}' }).block, true, 'grants.json');
+
+  // Código: só protegido quando instalado (sem .git). O checkout de dev fica livre.
+  const root = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'wardenv-root-'));
+  const hookFile = pathMod.join(root, 'hooks', 'pre-tool.js');
+  assert.equal(checkWrite({ filePath: hookFile, body: 'process.exit(0)' }, { root, codeProtected: true }).block, true);
+  assert.equal(checkWrite({ filePath: hookFile, body: 'x' }, { root, codeProtected: false }).block, false);
+
+  // Config do agente com o hook registrado.
+  const home = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'wardenv-cfg-'));
+  const settings = pathMod.join(home, '.claude', 'settings.json');
+  fs.mkdirSync(pathMod.dirname(settings));
+  const cmd = '"node" "C:/npm/wardenv/hooks/pre-tool.js"';
+  const cfg = { theme: 'dark', hooks: { PreToolUse: [{ matcher: '^(Bash)$', hooks: [{ type: 'command', command: cmd }] }] } };
+  const raw = JSON.stringify(cfg, null, 2);
+  fs.writeFileSync(settings, raw);
+
+  // Trocar só o nome do arquivo: o trecho editado não cita o caminho inteiro,
+  // mas o hook passaria a apontar para um arquivo que não existe.
+  const rename = [{ old: 'pre-tool.js', new: 'noop.js' }];
+  assert.equal(checkWrite({ filePath: settings, edits: rename }).block, true, 'renomear o hook');
+  // Esvaziar o matcher.
+  assert.equal(checkWrite({ filePath: settings, edits: [{ old: '^(Bash)$', new: '^$' }] }).block, true, 'matcher');
+  // Reescrever sem o hook, ligar disableAllHooks, quebrar o JSON.
+  assert.equal(checkWrite({ filePath: settings, body: '{"hooks":{}}' }).block, true, 'Write sem o hook');
+  assert.equal(checkWrite({ filePath: settings, edits: [{ old: '"theme"', new: '"disableAllHooks": true, "theme"' }] }).block, true, 'disableAllHooks');
+  assert.equal(checkWrite({ filePath: settings, body: raw.slice(0, -5) }).block, true, 'JSON quebrado');
+});
+
+test('atrito: editar a config do agente sem tocar no wardenv continua liberado', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const pathMod = require('node:path');
+  const { checkWrite } = require('../src/lib/selfguard');
+
+  const home = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'wardenv-cfg-ok-'));
+  const settings = pathMod.join(home, '.claude', 'settings.json');
+  fs.mkdirSync(pathMod.dirname(settings));
+  const cmd = '"node" "C:/npm/wardenv/hooks/pre-tool.js"';
+  const cfg = { theme: 'dark', hooks: { PreToolUse: [{ matcher: '^(Bash)$', hooks: [{ type: 'command', command: cmd }] }] } };
+  fs.writeFileSync(settings, JSON.stringify(cfg, null, 2));
+
+  // Trocar o tema, adicionar permissão, adicionar outro hook: tudo legítimo.
+  assert.equal(checkWrite({ filePath: settings, edits: [{ old: '"dark"', new: '"light"' }] }).block, false);
+  const more = { ...cfg, permissions: { allow: ['Bash(npm test)'] } };
+  assert.equal(checkWrite({ filePath: settings, body: JSON.stringify(more) }).block, false);
+  // Config que ainda não tem o wardenv: nada a proteger.
+  const other = pathMod.join(fs.mkdtempSync(pathMod.join(os.tmpdir(), 'wardenv-cfg-none-')), '.claude', 'settings.json');
+  assert.equal(checkWrite({ filePath: other, body: '{"hooks":{}}' }).block, false);
+});

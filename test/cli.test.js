@@ -60,3 +60,60 @@ test('cli: comando desconhecido cai na ajuda, sem crash', () => {
   assert.equal(code, 0);
   assert.match(out, /wardenv install/);
 });
+
+test('cli: unlock recusa sem terminal interativo', () => {
+  // O shell do agente não tem TTY. Antes, `node .../cli.js unlock .env` rodado
+  // pelo agente criava o grant: foi o que o Codex fez no teste real.
+  const fs = require('node:fs');
+  const os = require('node:os');
+  // Só olha o grant DESTE arquivo: os arquivos de teste rodam em paralelo e
+  // dividem ~/.wardenv/grants.json, então limpar ou contar tudo disputaria
+  // com os testes de hook.
+  const { isUnlocked } = require('../src/lib/unlock');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-cli-tty-'));
+  fs.writeFileSync(path.join(dir, '.env'), 'K=abcdefghijklmnop\n');
+
+  const { out, code } = run(['unlock', '.env'], dir);
+  assert.equal(code, 1, 'deveria sair com erro');
+  assert.match(out, /interactive terminal/);
+  assert.equal(isUnlocked(dir, '.env'), false, 'nenhum grant deveria ter sido criado');
+});
+
+test('install: Codex não é instalado, mas o uninstall limpa entrada antiga', () => {
+  // No codex-cli 0.116 os hooks de ferramenta nunca disparam. Instalar
+  // mesmo assim imprimia "🔒 installed" e deixava o .env exposto.
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const { spawnSync } = require('node:child_process');
+  const INSTALL = path.join(__dirname, '..', 'src', 'install.js');
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-install-'));
+  fs.mkdirSync(path.join(home, '.claude'));
+  fs.mkdirSync(path.join(home, '.codex'));
+  const codexFile = path.join(home, '.codex', 'hooks.json');
+  fs.writeFileSync(codexFile, JSON.stringify({ hooks: {
+    PreToolUse: [{ matcher: '^(Bash)$', hooks: [{ type: 'command', command: '"node" "C:/x/wardenv/hooks/pre-tool.js"' }] }],
+    SessionStart: [{ matcher: 'startup', hooks: [{ type: 'command', command: 'echo third-party' }] }],
+  } }));
+
+  // os.homedir() é trocado antes de carregar o instalador: no Windows ele não
+  // obedece HOME/USERPROFILE, e sem isto o teste gravaria na config real.
+  const runInstall = (args) => spawnSync(process.execPath, ['-e', [
+    `require('os').homedir = () => ${JSON.stringify(home)};`,
+    `process.argv = [process.execPath, 'install.js', ...${JSON.stringify(args)}];`,
+    `require(${JSON.stringify(INSTALL)});`,
+  ].join('\n')], { encoding: 'utf8' });
+
+  const hooked = (f) => /wardenv[\\/]+hooks/i.test(fs.readFileSync(f, 'utf8'));
+
+  assert.equal(runInstall([]).status, 0);
+  assert.ok(hooked(path.join(home, '.claude', 'settings.json')), 'Claude Code deveria receber o hook');
+
+  const explicit = runInstall(['codex']);
+  assert.equal(explicit.status, 1, 'install codex deveria recusar');
+  assert.match(explicit.stderr, /not supported/);
+
+  assert.equal(runInstall(['codex', '--uninstall']).status, 0);
+  assert.equal(hooked(codexFile), false, 'entrada antiga do wardenv deveria sair');
+  assert.match(fs.readFileSync(codexFile, 'utf8'), /third-party/, 'hook de terceiro deveria ficar');
+});

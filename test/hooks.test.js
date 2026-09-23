@@ -19,8 +19,7 @@ const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 
 const HOOK = path.join(__dirname, '..', 'hooks', 'pre-tool.js');
-const CLI = path.join(__dirname, '..', 'src', 'cli.js');
-const { revokeAll } = require('../src/lib/unlock');
+const { revokeAll, grant } = require('../src/lib/unlock');
 
 function runHook(payload) {
   try {
@@ -38,8 +37,12 @@ function isDenied(result) {
   return !!(result && result.hookSpecificOutput && result.hookSpecificOutput.permissionDecision === 'deny');
 }
 
+// A CLI de unlock exige um humano num terminal (TTY) e confirmação digitada,
+// então os testes criam o grant pela biblioteca — o mesmo estado que a CLI
+// grava. A recusa da CLI sem TTY é testada em cli.test.js.
 function unlock(cwd, file, args = []) {
-  return execFileSync(process.execPath, [CLI, 'unlock', file, ...args], { cwd, encoding: 'utf8' });
+  const n = args.indexOf('-n');
+  return grant(cwd, file, { uses: n >= 0 ? parseInt(args[n + 1], 10) : 1 });
 }
 
 // Sandbox isolado por teste: cada um cria seu próprio .env e cwd, para não
@@ -60,14 +63,14 @@ test('Read: bloqueia .env sem unlock', () => {
   assert.ok(isDenied(res), 'deveria negar leitura sem unlock');
 });
 
-test('Read: unlock via CLI libera a tool Read', () => {
+test('Read: unlock libera a tool Read', () => {
   const dir = makeSandbox('read-unlock');
   unlock(dir, '.env');
   const res = runHook({ cwd: dir, tool_name: 'Read', tool_input: { file_path: path.join(dir, '.env') } });
   assert.equal(res, null, 'deveria liberar após unlock');
 });
 
-test('Bash: unlock via CLI libera `grep ... .env` (regressão do bug real)', () => {
+test('Bash: unlock libera `grep ... .env` (regressão do bug real)', () => {
   const dir = makeSandbox('bash-unlock');
 
   const before = runHook({ cwd: dir, tool_name: 'Bash', tool_input: { command: 'grep SECRET .env' } });
@@ -79,7 +82,7 @@ test('Bash: unlock via CLI libera `grep ... .env` (regressão do bug real)', () 
   assert.equal(after, null, 'unlock deveria liberar o comando Bash também, não só a tool Read');
 });
 
-test('Bash: unlock via CLI libera `cat .env`', () => {
+test('Bash: unlock libera `cat .env`', () => {
   const dir = makeSandbox('bash-cat');
   unlock(dir, '.env');
   const res = runHook({ cwd: dir, tool_name: 'Bash', tool_input: { command: 'cat .env' } });

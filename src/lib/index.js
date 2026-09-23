@@ -15,6 +15,7 @@ const {
 } = require('./redact');
 const { grant, isUnlocked, consumeUnlock, listGrants, revokeAll } = require('./unlock');
 const { log, tail } = require('./audit');
+const { checkWrite } = require('./selfguard');
 
 /**
  * Decide o que fazer com uma tentativa de acesso, de forma agnóstica de runtime.
@@ -25,6 +26,7 @@ const { log, tail } = require('./audit');
  * @param {string} [req.path]     alvo, para kind 'read' e 'write'
  * @param {string} [req.command]  linha de comando, para kind 'command'
  * @param {string} [req.content]  conteúdo a gravar, para kind 'write'
+ * @param {Array<{old:string,new:string,all?:boolean}>} [req.edits] pares, quando a escrita é uma edição
  * @param {string} [req.cwd]
  * @returns {{decision:'allow'|'deny'|'redact', reason?:string, context?:string, hits?:string[]}}
  */
@@ -53,6 +55,8 @@ function inspect(req) {
   }
 
   if (req.kind === 'write') {
+    const disarm = checkWrite({ filePath: req.path, body: req.content || '', edits: req.edits || null });
+    if (disarm.block) return { decision: 'deny', reason: disarm.reason };
     if (classifyPath(req.path).secret) return { decision: 'allow' };
     const { hits } = redactText(req.content || '', collectKnownSecrets(cwd));
     if (hits.length) {

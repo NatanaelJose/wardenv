@@ -142,11 +142,26 @@ function findSecretPathToken(cmd) {
 // segmento, ou logo após um executor como `bash -c`, `sh -c`, `npx`, `cmd /c`.
 // Testar a frase solta bloqueava `grep "wardenv install" README.md`, que é
 // leitura de documentação e não desarme.
-const CMD_HEAD = String.raw`(?:^|^\s*(?:bash|sh|zsh|cmd|powershell|pwsh|npx|npm\s+exec|env)\s+(?:-\w+\s+)*)`;
+// `&` é o operador de chamada do PowerShell (`& wardenv unlock`), e `cmd /c`
+// usa flag com barra. Os dois passavam por fora. O nome pode vir com a extensão
+// do shim que o npm instala no Windows (`wardenv.cmd`, `wardenv.ps1`).
+const CMD_HEAD = String.raw`(?:^\s*(?:&\s*)?(?:(?:bash|sh|zsh|cmd|powershell|pwsh|npx|npm\s+exec|env|eval|exec)\s+(?:[-/]\w+\s+)*)?)`;
+const WARDENV_BIN = String.raw`["']?wardenv(?:\.cmd|\.ps1|\.exe)?["']?`;
 
 const SELF_DISARM = [
-  new RegExp(`${CMD_HEAD}["']?wardenv["']?\\s+(unlock|uninstall|install)\\b`, 'i'),
-  new RegExp(`${CMD_HEAD}["']?wardenv["']?\\b[^|;&]*--uninstall`, 'i'),
+  new RegExp(`${CMD_HEAD}${WARDENV_BIN}\\s+(unlock|uninstall|install)\\b`, 'i'),
+  new RegExp(`${CMD_HEAD}${WARDENV_BIN}\\b[^|;&]*--uninstall`, 'i'),
+  // A CLI chamada pelo caminho, sem passar pelo nome `wardenv` em posição de comando.
+  /wardenv[\\/]+src[\\/]+cli\.js["']?\s+(unlock|install|uninstall)\b/i,
+  // Carregar a biblioteca de grants para criar um unlock sem a CLI.
+  /wardenv[\\/]+(?:src[\\/]+)?lib[\\/]+unlock/i,
+  /\bStart-Process\b[^|;&]*wardenv[^|;&]*\b(unlock|uninstall)\b/i,
+  // Forjar o terminal que a CLI de unlock exige. Atribuir isTTY numa linha de
+  // comando não tem uso legítimo.
+  /\bisTTY\s*=[^=]/,
+  // Script na linha carregando o código do wardenv (cli.js, lib/*). Sem isto,
+  // `node -e "...require('.../wardenv/src/cli.js')"` chamava a CLI por dentro.
+  /\b(?:node|deno|bun)\b[^|;&]*\s-(?:e|p|-eval|-print)\b[^|;&]*wardenv[\\/]+src[\\/]/i,
   // Só o instalador DO wardenv. `install\.js` sozinho pegava qualquer projeto
   // que tivesse um arquivo com esse nome — largo demais para uma regra que bloqueia.
   /wardenv[\\/]src[\\/]install\.js/i,

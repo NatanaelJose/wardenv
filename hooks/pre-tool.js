@@ -14,6 +14,7 @@ const { analyzeCommand } = require('../src/lib/command');
 const { summarizeEnvFile } = require('../src/lib/redact');
 const { isUnlocked, consumeUnlock } = require('../src/lib/unlock');
 const { log } = require('../src/lib/audit');
+const { checkWrite } = require('../src/lib/selfguard');
 
 const TOOLS_FILE = new Set(['Read', 'NotebookRead']);
 const TOOLS_WRITE = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
@@ -133,6 +134,25 @@ process.stdin.on('end', () => {
         ti.content, ti.file_text, ti.new_string, ti.new_str,
         ...(Array.isArray(ti.edits) ? ti.edits.map((e) => e && (e.new_string || e.new_str)) : []),
       ].filter((s) => typeof s === 'string' && s).join('\n');
+
+      // Antes de tudo: a escrita desarma o wardenv? Vale até para destino que
+      // é cofre, então precisa vir antes do allow logo abaixo.
+      const pair = (e) => e && { old: e.old_string ?? e.old_str, new: e.new_string ?? e.new_str, all: !!e.replace_all };
+      const edits = Array.isArray(ti.edits)
+        ? ti.edits.map(pair)
+        : ti.old_string != null || ti.old_str != null
+          ? [pair(ti)]
+          : null;
+      const disarm = checkWrite({ filePath: fp, body, edits });
+      if (disarm.block) {
+        log({ event: 'block-disarm', tool, path: fp, reason: disarm.reason, agent, cwd });
+        deny(
+          `wardenv: this write would disarm wardenv (${disarm.reason}).`,
+          'The agent cannot change wardenv, its state, or its hook registration. ' +
+            'If this change is intended, ask the user to make it themselves.'
+        );
+      }
+
       // Escrever NO .env é legítimo (criar/editar credencial local).
       // O risco é o inverso: escrever segredo em arquivo NÃO-secreto.
       if (classifyPath(fp).secret) allow();

@@ -8,7 +8,7 @@
 const path = require('path');
 const fs = require('fs');
 const { grant, listGrants, revokeAll } = require('./lib/unlock');
-const { tail } = require('./lib/audit');
+const { tail, log } = require('./lib/audit');
 const { classifyPath } = require('./lib/targets');
 const { analyzeCommand } = require('./lib/command');
 const { summarizeEnvFile, collectKnownSecrets, redactText } = require('./lib/redact');
@@ -105,10 +105,36 @@ switch (cmd) {
     const mins = tIdx >= 0 ? parseInt(rest[tIdx + 1], 10) || 10 : 10;
     const p = path.resolve(process.cwd(), f);
     if (!fs.existsSync(p)) die(`file does not exist: ${f}`);
-    const g = grant(process.cwd(), f, { uses, ttlMs: mins * 60000 });
-    console.log(`🔓 unlocked: ${g.path}`);
-    console.log(`   ${uses} read(s), expires in ${mins} min`);
-    console.log('   the agent may read this file on its next attempt.');
+
+    // O unlock é um ato do humano. Bloquear `wardenv unlock` no hook não basta:
+    // `node .../cli.js unlock`, `& wardenv unlock` e `cmd /c` passavam por fora
+    // da regra de texto. O que o agente não tem é um terminal: o shell dele
+    // roda sem TTY. E a confirmação digitada fecha o `Start-Process`, que abre
+    // uma janela com TTY mas sem ninguém para digitar.
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      die(
+        'wardenv unlock must be run by you, in an interactive terminal.\n' +
+          'It refuses to run without one, so an agent cannot grant itself access.\n' +
+          '(Git Bash/mintty users: run it from PowerShell, Windows Terminal, or `winpty wardenv unlock`.)'
+      );
+    }
+
+    const base = path.basename(p);
+    const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(`Grant ${uses} read(s) of ${p} for ${mins} min? Type "${base}" to confirm: `, (answer) => {
+      rl.close();
+      if (answer.trim() !== base) {
+        log({ event: 'unlock-refused', path: p, cwd: process.cwd() });
+        die('not confirmed. Nothing was unlocked.');
+      }
+      const g = grant(process.cwd(), f, { uses, ttlMs: mins * 60000 });
+      // Até aqui só o USO do unlock ia para o log, nunca a criação — não havia
+      // como saber depois quem abriu a porta.
+      log({ event: 'unlock-granted', path: g.path, uses, minutes: mins, tty: true, cwd: process.cwd() });
+      console.log(`🔓 unlocked: ${g.path}`);
+      console.log(`   ${uses} read(s), expires in ${mins} min`);
+      console.log('   the agent may read this file on its next attempt.');
+    });
     break;
   }
 

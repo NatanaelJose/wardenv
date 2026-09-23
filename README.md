@@ -6,7 +6,7 @@
 
 [![npm](https://img.shields.io/npm/v/wardenv?color=black)](https://www.npmjs.com/package/wardenv)
 [![license](https://img.shields.io/badge/license-MIT-black)](./LICENSE)
-[![tests](https://img.shields.io/badge/tests-46%20passing-black)](./test/wardenv.test.js)
+[![tests](https://img.shields.io/badge/tests-52%20passing-black)](./test/wardenv.test.js)
 [![deps](https://img.shields.io/badge/dependencies-0-black)](./package.json)
 
 </div>
@@ -105,25 +105,31 @@ GSD setup on the same machine.</sub>
 
 ### Agent support
 
-`wardenv install` detects the agents you have and installs into each.
+`wardenv install` detects the supported agents you have and installs into each.
 
 | Agent | Status | Config |
 |-------|--------|--------|
 | Claude Code | ✅ verified end to end | `~/.claude/settings.json` |
-| Codex CLI | ⚠️ adapter written, not verified | `~/.codex/hooks.json` |
+| Codex CLI | ❌ not supported (tested on 0.116.0) | |
 
-Codex uses the same hook contract as Claude Code (`matcher`, JSON on stdin,
-`permissionDecision: "deny"`), so the adapter is a drop-in and the installer wires it up.
-But nobody has confirmed it against a live Codex session, and the installer says so out
-loud when it runs. Treat it as untested until you've tried it with a throwaway `.env`.
+We tested Codex against a real session with a throwaway `.env`. It read the file, printed
+the values, ran a `curl` upload of it (which only failed because nothing was listening)
+and ran `wardenv unlock` on itself, and wardenv never saw any of it. Codex reads `~/.codex/hooks.json`, but in 0.116.0 it only fires
+`SessionStart`, `UserPromptSubmit` and `Stop`. There is no event before or after a tool
+runs, so there is nothing for wardenv to hook into.
+
+The installer now refuses `wardenv install codex` instead of printing "installed" over a
+guard that never runs. If an older version put wardenv into your Codex config, remove it
+with `wardenv uninstall codex`. If a later Codex release adds tool hooks, the adapter can
+come back.
 
 Blocking hooks also exist in Gemini CLI (`BeforeTool`), Cursor (`beforeShellExecution`,
 `beforeReadFile`) and Amp (`tool.call`). Adapters are straightforward, since the engine in
 `src/lib/` is runtime-agnostic and exposes `inspect()` / `scrub()`.
 
 One caveat worth knowing before you port it: only Claude Code and Amp let a hook rewrite a
-tool's output. Codex, Gemini and Cursor (outside MCP) can block and modify input, but
-can't redact what came back. Door 3 degrades there from "redact the leak" to "block the
+tool's output. Gemini and Cursor (outside MCP) can block and modify input, but can't
+redact what came back. Door 3 degrades there from "redact the leak" to "block the
 command", which is blunter.
 
 ---
@@ -159,16 +165,29 @@ wardenv unlock .env -n 3 -t 30 # three reads, 30 minutes
 wardenv lock                   # revoke everything, now
 ```
 
-The grant is scoped to one file, burns on use, and expires on a clock.
+The grant is scoped to one file, burns on use, and expires on a clock. Before it's
+created, wardenv asks you to type the file name back:
 
-The agent can't open the door for itself. `wardenv unlock` is a blocked command in the
-agent's own shell, along with anything that would touch wardenv's state or its hook
-registration. The key is yours.
+```console
+$ wardenv unlock .env
+Grant 1 read(s) of /proj/.env for 10 min? Type ".env" to confirm: .env
+🔓 unlocked: /proj/.env
+```
+
+That prompt is what keeps the key yours. An agent's shell has no terminal, so
+`wardenv unlock` refuses to run there however it's invoked: by name, through `node
+…/cli.js`, `cmd /c` or PowerShell's `&`. The hook also blocks those forms outright, and
+blocks Write or Edit calls that would forge a grant in `~/.wardenv/`, change wardenv's own
+files, or drop its hook from your agent config.
+
+If you use Git Bash's mintty terminal, run `wardenv unlock` from PowerShell or Windows
+Terminal, or through `winpty`. Node can't see a terminal in mintty.
 
 Every pass is written down:
 
 ```
 2026-09-18 22:52:14  unlock-used    Read   /proj/.env
+2026-09-18 22:52:03  unlock-granted        /proj/.env
 2026-09-18 22:51:58  redact-output  Bash   DATABASE_URL, ANTHROPIC_API_KEY
 2026-09-18 22:51:58  block-write    Write  /proj/config.ts
 ```
@@ -218,8 +237,10 @@ The suite tests friction alongside security: `npm run build`, `environment.ts`,
 `cat .env.example` and `env FOO=1 npm test` must always pass. A guard that cries wolf gets
 switched off.
 
-**4. The agent cannot disarm the guard.**
-Self-disarm attempts are blocked and tested. Otherwise every other guarantee is theater.
+**4. The agent cannot disarm the guard by accident or by the obvious path.**
+Self-disarm attempts are blocked and tested, and an unlock needs a human at a terminal.
+Otherwise every other guarantee is theater. This isn't a hard boundary, though: an agent
+set on it could write a script that edits your files and run it. See `SECURITY.md`.
 
 **5. Zero dependencies.**
 A tool that reads your secrets shouldn't pull a supply chain along with it.
@@ -262,7 +283,7 @@ what makes adapters for other runtimes straightforward.
 npm test
 ```
 
-46 tests. The engine suite covers two classes, and the second matters as much as the
+52 tests. The engine suite covers two classes, and the second matters as much as the
 first:
 
 - Leak (false negative): a secret got through. A security failure.

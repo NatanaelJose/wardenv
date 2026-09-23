@@ -41,6 +41,23 @@ An agent that runs `node -e "console.log(process.env.SECRET)"` produces output t
 wardenv *will* redact on the way back, but a program that sends a secret over the network
 is not something a context guardrail can stop.
 
+**6. Self-disarm protection stops the obvious paths, not a determined agent.**
+`wardenv unlock` refuses to run without an interactive terminal and asks you to type the
+file name, so an agent's shell can't grant itself access. The hook also blocks the
+shell forms of unlock and any Write or Edit that would forge a grant in `~/.wardenv/`,
+change wardenv's installed files, or remove its hook from the agent config. But the
+grants file, the hook and the config all live in your own user account. An agent that
+writes a script to some other file and runs it can still change them. Closing that
+takes an OS boundary: a separate user, or a secret manager the agent can't reach.
+
+When wardenv runs from a git checkout (you're developing it), its own `src/` and
+`hooks/` are left editable on purpose. Install from npm to get that protection.
+
+**7. Codex CLI is not supported.**
+Tested on codex-cli 0.116.0: it only runs `SessionStart`, `UserPromptSubmit` and `Stop`
+hooks, with nothing before or after a tool, so wardenv is never called there.
+`wardenv install codex` refuses rather than claiming protection it can't give.
+
 ## Reporting a vulnerability
 
 Open a GitHub issue for anything that is already public or low risk (a missed secret

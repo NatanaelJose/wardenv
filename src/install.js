@@ -41,10 +41,16 @@ const TARGETS = {
     label: 'Codex CLI',
     file: path.join(os.homedir(), '.codex', 'hooks.json'),
     verified: false,
-    note:
-      'Codex usa o mesmo formato (matcher + command + JSON no stdin), mas esta\n' +
-      '   integração não foi verificada de ponta a ponta. Teste com um .env de\n' +
-      '   mentira antes de confiar nela.',
+    // Testado de ponta a ponta no codex-cli 0.116.0: o Codex lê o hooks.json,
+    // mas só dispara SessionStart, UserPromptSubmit e Stop. Não existe evento
+    // antes ou depois de uma ferramenta, então os hooks do wardenv nunca rodam
+    // e `cat .env` passa. Instalar mesmo assim só daria a impressão de
+    // proteção. A entrada fica para que o uninstall limpe instalações antigas.
+    supported: false,
+    unsupported:
+      'Codex CLI (tested on 0.116.0) has no pre/post tool hook. It only runs\n' +
+      '   SessionStart, UserPromptSubmit and Stop, so wardenv would never be called\n' +
+      '   and the agent could still read your .env. Nothing was installed.',
     root: (s) => (s.hooks = s.hooks || {}),
   },
 };
@@ -103,10 +109,14 @@ function main() {
   const uninstall = args.includes('--uninstall');
   const named = args.find((a) => !a.startsWith('--'));
 
-  // Sem alvo explícito: instala em todo agente cuja config já exista.
+  // Sem alvo explícito: instala em todo agente suportado cuja config já exista.
+  // O uninstall passa por todos, inclusive os não suportados, para limpar
+  // instalações feitas antes de o suporte ser retirado.
   const chosen = named
     ? [named]
-    : Object.keys(TARGETS).filter((k) => fs.existsSync(path.dirname(TARGETS[k].file)));
+    : Object.keys(TARGETS).filter(
+        (k) => fs.existsSync(path.dirname(TARGETS[k].file)) && (uninstall || TARGETS[k].supported !== false)
+      );
 
   if (!chosen.length) {
     console.error('✖ No supported agent found. Pass one explicitly: wardenv install claude');
@@ -118,6 +128,18 @@ function main() {
     if (!target) {
       console.error(`✖ Unknown target "${key}". Known: ${Object.keys(TARGETS).join(', ')}`);
       process.exit(1);
+    }
+
+    if (!uninstall && target.supported === false) {
+      console.error(`✖ ${target.label} is not supported.\n   ${target.unsupported}`);
+      process.exit(1);
+    }
+
+    // Uninstall de um agente que nunca teve config: nada a limpar, e
+    // loadConfig criaria a pasta dele à toa.
+    if (uninstall && !fs.existsSync(target.file)) {
+      console.log(`${target.label}: nothing to remove.`);
+      continue;
     }
 
     const cfg = loadConfig(target.file);
