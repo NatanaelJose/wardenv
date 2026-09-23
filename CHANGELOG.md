@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`cat .env` (and any shell read) never showed the key structure the README's own
+  example promises.** Only the native `Read` tool did. A shell read — `cat`, `grep`,
+  `Get-Content`, the most common way anyone actually reads a file — got a generic "this
+  would expose credentials" instead of `SECRET_KEY=<set, 16 chars>` plus the `wardenv
+  unlock` suggestion. Found live testing a Claude Code session. Fixed: both paths now
+  share the same key-listing logic.
+- 2 new tests, 99 total.
+
 A live Codex Desktop test session found two more real bypasses, both fixed:
 
 - **A prompt-level wrapper rule bypassed detection entirely.** A project instructing the

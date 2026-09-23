@@ -115,7 +115,7 @@ install <agent>` targets one directly: `claude`, `gemini`, `cursor`, `codex`, `c
 | Claude Code | `~/.claude/settings.json` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ verified end to end |
 | Gemini CLI | `~/.gemini/settings.json` | ✅ | ✅ | ✅ | ⚠️ deny-only (see below) | ✅ | ⚠️ unverified — checked against 0.34 source, not a live session |
 | Cursor | `~/.cursor/hooks.json` | ✅ | ✅ | ✅ | ❌ no hook for it | ✅ | ⚠️ unverified — checked against 3.4.20 source, not a live session |
-| Codex CLI | `~/.codex/hooks.json` | — no read tool¹ | ✅ | ✅ (`apply_patch`) | ⚠️ deny-only (see below) | ✅ | ⚠️ unverified — needs Codex 0.129+; 0.116 has no tool hooks at all |
+| Codex CLI | `~/.codex/hooks.json` | — no read tool¹ | ✅ | ✅ (`apply_patch`) | ⚠️ deny-only (see below) | ✅ | ⚠️ close to verified — a live 0.156.1 Desktop run blocked every case (see below), but the unlock happy path and subagents haven't been exercised yet |
 | GitHub Copilot CLI | `~/.copilot/hooks/wardenv.json` | ✅ | ✅ | ✅ | ⚠️ needs a newer release | ✅ | ⚠️ unverified — needs Copilot CLI newer than 1.0.11, and PowerShell 7 on Windows (see below) |
 
 ¹ Codex has no dedicated file-read tool; files are read through the shell, which the
@@ -361,6 +361,8 @@ looks through `rtk`, `sudo`, `doas` and `env VAR=value` at the front of a comman
 the actual binary — `rtk cat .env` and `sudo curl -F f=@.env ...` are still caught. This
 list is intentionally closed: an unrecognized wrapper is treated as the real command, not
 as "one more layer to see through", so this doesn't quietly widen into "trust anything".
+Confirmed live, agent prefixing through its own real RTK.md: `rtk cat .env` denied
+identically to `cat .env` in both Claude Code and Codex Desktop sessions.
 
 ---
 
