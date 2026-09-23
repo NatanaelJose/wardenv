@@ -6,7 +6,8 @@
 //   - nunca sobrescreve config sem backup;
 //   - é idempotente (rodar duas vezes não duplica hook);
 //   - preserva hooks de terceiros que já estejam lá (rtk, gsd, etc.);
-//   - wardenv entra PRIMEIRO: se ele bloqueia, nada mais precisa rodar.
+//   - wardenv entra PRIMEIRO: se ele bloqueia, nada mais precisa rodar;
+//   - grava de forma atômica: uma queda no meio não deixa a config pela metade.
 
 const fs = require('fs');
 const os = require('os');
@@ -14,52 +15,143 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const NODE = process.execPath;
-const PRE = `"${NODE}" "${path.join(ROOT, 'hooks', 'pre-tool.js')}"`;
-const POST = `"${NODE}" "${path.join(ROOT, 'hooks', 'post-tool.js')}"`;
+const WIN = process.platform === 'win32';
 
-// Cobre tools nativas e MCP. PreToolUse roda mesmo em bypassPermissions,
-// e também dentro de subagentes — que é o vetor mais esquecido.
-const PRE_MATCHER = '^(Read|NotebookRead|Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell)$';
-const POST_MATCHER = '^(Bash|PowerShell|Read|mcp__.*)$';
+function hookCmd(script, agent) {
+  const base = `"${NODE}" "${path.join(ROOT, 'hooks', script)}"`;
+  return agent ? `${base} --agent ${agent}` : base;
+}
+
+// O Gemini roda o comando do hook dentro do PowerShell no Windows, e lá um
+// caminho entre aspas no começo da linha é só uma string: precisa do `&`.
+function psSafe(cmd) {
+  return WIN ? `& ${cmd}` : cmd;
+}
+
+function home(envVar, ...rest) {
+  return process.env[envVar] ? path.join(process.env[envVar], ...rest.slice(1)) : path.join(os.homedir(), ...rest);
+}
+
+/** Está no PATH? Sem executar nada além de `where`/`command -v`. */
+function onPath(bin) {
+  const r = require('child_process').spawnSync(WIN ? 'where' : 'sh', WIN ? [bin] : ['-c', `command -v ${bin}`], {
+    stdio: 'ignore',
+  });
+  return r.status === 0;
+}
 
 /**
  * Alvos suportados.
  *
  * `verified` diz se a integração foi testada de ponta a ponta contra o agente
- * real. Um adaptador não verificado ainda é útil — o formato é o mesmo — mas o
- * usuário merece saber a diferença antes de confiar nele para segurança.
+ * real. Um adaptador não verificado ainda é útil — o formato foi conferido no
+ * código do agente — mas o usuário merece saber a diferença antes de confiar
+ * nele para segurança.
+ *
+ * `layout`:
+ *   - 'nested': { hooks: { Evento: [ { matcher, hooks: [ {type, command, timeout} ] } ] } }
+ *   - 'own':    arquivo só do wardenv, reescrito inteiro (Copilot).
  */
 const TARGETS = {
   claude: {
     label: 'Claude Code',
     file: path.join(os.homedir(), '.claude', 'settings.json'),
     verified: true,
-    // hooks ficam sob a chave "hooks" na raiz
-    root: (s) => (s.hooks = s.hooks || {}),
+    layout: 'nested',
+    // Cobre tools nativas e MCP. PreToolUse roda mesmo em bypassPermissions,
+    // e também dentro de subagentes — que é o vetor mais esquecido.
+    events: {
+      PreToolUse: ['^(Read|NotebookRead|Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell)$', hookCmd('pre-tool.js')],
+      PostToolUse: ['^(Bash|PowerShell|Read|mcp__.*)$', hookCmd('post-tool.js')],
+    },
+    timeout: 5,
+  },
+  gemini: {
+    label: 'Gemini CLI',
+    file: path.join(os.homedir(), '.gemini', 'settings.json'),
+    verified: false,
+    layout: 'nested',
+    // O matcher do Gemini é regex SEM âncora: sem ^$, `read_file` casaria
+    // também com qualquer tool MCP que tivesse isso no nome.
+    events: {
+      BeforeTool: ['^(read_file|read_many_files|run_shell_command|write_file|replace)$', psSafe(hookCmd('pre-tool.js', 'gemini'))],
+      AfterTool: ['^(run_shell_command|read_file|read_many_files|mcp_.*)$', psSafe(hookCmd('post-tool.js', 'gemini'))],
+    },
+    timeout: 10000, // milissegundos, no Gemini
+    extra: { name: 'wardenv' },
+    note:
+      'Checked against the Gemini CLI 0.34 source, not yet against a live session.\n' +
+      '   Gemini cannot rewrite a tool result: a leak is replaced by an error that carries\n' +
+      '   the redacted text. `@.env` typed in your own prompt skips tool hooks.',
+  },
+  cursor: {
+    label: 'Cursor',
+    file: path.join(os.homedir(), '.cursor', 'hooks.json'),
+    verified: false,
+    layout: 'cursor', // {version:1, hooks:{evento:[{command, matcher}]}} — entrada PLANA, sem "hooks:[...]"
+    events: {
+      preToolUse: ['Shell|Read|Write|Delete|Grep', hookCmd('pre-tool.js', 'cursor')],
+    },
+    timeout: 10,
+    note:
+      'Checked against Cursor 3.4.20, not yet against a live session. Cursor also loads\n' +
+      "   ~/.claude/settings.json by default (\"Include Third-Party Plugins\" setting); wardenv\n" +
+      '   detects that payload shape on its own, so the two registrations do not double-fire.\n' +
+      '   Output redaction is not possible in Cursor: only reads and writes can be blocked.\n' +
+      '   If your PowerShell profile prints anything, permission hooks may misfire — see docs.',
   },
   codex: {
     label: 'Codex CLI',
-    file: path.join(os.homedir(), '.codex', 'hooks.json'),
+    file: home('CODEX_HOME', '.codex', 'hooks.json'),
     verified: false,
-    // Testado de ponta a ponta no codex-cli 0.116.0: o Codex lê o hooks.json,
-    // mas só dispara SessionStart, UserPromptSubmit e Stop. Não existe evento
-    // antes ou depois de uma ferramenta, então os hooks do wardenv nunca rodam
-    // e `cat .env` passa. Instalar mesmo assim só daria a impressão de
-    // proteção. A entrada fica para que o uninstall limpe instalações antigas.
-    supported: false,
-    unsupported:
-      'Codex CLI (tested on 0.116.0) has no pre/post tool hook. It only runs\n' +
-      '   SessionStart, UserPromptSubmit and Stop, so wardenv would never be called\n' +
-      '   and the agent could still read your .env. Nothing was installed.',
-    root: (s) => (s.hooks = s.hooks || {}),
+    layout: 'nested',
+    // Todo shell chega como "Bash", inclusive PowerShell no Windows. Escrita é
+    // apply_patch. Não existe tool de leitura: arquivo se lê pelo shell.
+    events: {
+      PreToolUse: ['^(Bash|apply_patch)$', hookCmd('pre-tool.js', 'codex')],
+      PostToolUse: ['^(Bash|mcp__.*)$', hookCmd('post-tool.js', 'codex')],
+    },
+    timeout: 5,
+    note:
+      'Needs Codex 0.129 or newer (0.116 has no tool hooks at all; the desktop app\n' +
+      '   ships its own newer CLI). Codex runs a new hook only after you trust it:\n' +
+      '   open /hooks in Codex and approve the wardenv entries.',
+  },
+  copilot: {
+    label: 'GitHub Copilot CLI',
+    file: home('COPILOT_HOME', '.copilot', 'hooks', 'wardenv.json'),
+    detect: home('COPILOT_HOME', '.copilot'),
+    verified: false,
+    layout: 'own',
+    // Sem matcher: até a 1.0.36 o Copilot ignorava o matcher do preToolUse.
+    // O adaptador filtra pela tool.
+    events: {
+      preToolUse: hookCmd('pre-tool.js', 'copilot'),
+      postToolUse: hookCmd('post-tool.js', 'copilot'),
+    },
+    timeout: 10,
+    // No Windows o Copilot roda o campo `powershell` com pwsh.exe (PowerShell 7).
+    // Sem ele o hook nem sobe — e a 1.0.x deixa a tool rodar quando o hook
+    // falha. Instalar assim só daria a impressão de proteção.
+    precheck: () =>
+      WIN && !onPath('pwsh')
+        ? 'Copilot CLI runs hooks on Windows through pwsh.exe (PowerShell 7), which is not\n' +
+          '   on your PATH. The hook would never start, and Copilot lets the tool run when a\n' +
+          '   hook fails. Install PowerShell 7 (winget install Microsoft.PowerShell) and retry.'
+        : null,
+    note:
+      'Checked against the Copilot CLI 1.0.11 source, not yet against a live session.\n' +
+      '   Before 1.0.57 Copilot lets a tool run when the hook errors or times out, and\n' +
+      '   output redaction needs a release newer than 1.0.11. Update Copilot CLI.',
   },
 };
 
 function isWardenv(h) {
-  return typeof h?.command === 'string' && /wardenv[\\/](hooks|src)/i.test(h.command);
+  const cmd = [h?.command, h?.bash, h?.powershell].find((c) => typeof c === 'string');
+  return !!cmd && /wardenv[\\/](hooks|src)/i.test(cmd);
 }
 
-function ensure(hooks, event, matcher, command, timeout) {
+function ensure(hooks, event, matcher, command, timeout, extra) {
   hooks[event] = hooks[event] || [];
   // remove entradas antigas do wardenv (idempotência / upgrade)
   for (const group of hooks[event]) {
@@ -71,7 +163,7 @@ function ensure(hooks, event, matcher, command, timeout) {
 
   hooks[event].unshift({
     matcher,
-    hooks: [{ type: 'command', command, timeout }],
+    hooks: [{ ...(extra || {}), type: 'command', command, timeout }],
   });
 }
 
@@ -85,6 +177,19 @@ function stripWardenv(hooks) {
   }
 }
 
+// Cursor: cada entrada É o hook — {command, matcher} — sem "hooks:[...]" aninhado.
+function ensureCursor(hooks, event, matcher, command, timeout) {
+  hooks[event] = (hooks[event] || []).filter((h) => !isWardenv(h));
+  hooks[event].unshift({ command, matcher, timeout });
+}
+
+function stripWardenvCursor(hooks) {
+  for (const event of Object.keys(hooks)) {
+    if (!Array.isArray(hooks[event])) continue;
+    hooks[event] = hooks[event].filter((h) => !isWardenv(h));
+  }
+}
+
 function loadConfig(file) {
   if (!fs.existsSync(file)) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -93,7 +198,8 @@ function loadConfig(file) {
   const raw = fs.readFileSync(file, 'utf8');
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    // Editores no Windows costumam gravar com BOM, que o JSON.parse recusa.
+    parsed = JSON.parse(raw.replace(/^﻿/, ''));
   } catch {
     console.error(`✖ ${file} is not valid JSON. Fix it before installing.`);
     process.exit(1);
@@ -102,6 +208,32 @@ function loadConfig(file) {
   fs.writeFileSync(backup, raw);
   console.log(`backup: ${backup}`);
   return parsed;
+}
+
+/** Grava num temporário ao lado e renomeia: ou a config nova inteira, ou a antiga intacta. */
+function writeAtomic(file, text) {
+  const tmp = `${file}.wardenv-${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
+}
+
+function installOwn(target) {
+  const entry = (command) => ({ type: 'command', bash: command, powershell: command, timeoutSec: target.timeout });
+  const cfg = { version: 1, hooks: {} };
+  for (const [event, command] of Object.entries(target.events)) cfg.hooks[event] = [entry(command)];
+  if (fs.existsSync(target.file)) loadConfig(target.file); // só pelo backup
+  else fs.mkdirSync(path.dirname(target.file), { recursive: true });
+  writeAtomic(target.file, JSON.stringify(cfg, null, 2));
+}
+
+function uninstallOwn(target) {
+  // O arquivo é do wardenv, mas só apaga se ainda for: nunca remove algo que
+  // o usuário tenha reaproveitado com hooks próprios.
+  const cfg = loadConfig(target.file);
+  stripWardenv(cfg.hooks || {});
+  const left = Object.values(cfg.hooks || {}).some((v) => Array.isArray(v) && v.some((h) => !isWardenv(h)));
+  if (left) writeAtomic(target.file, JSON.stringify(cfg, null, 2));
+  else fs.unlinkSync(target.file);
 }
 
 function main() {
@@ -115,7 +247,7 @@ function main() {
   const chosen = named
     ? [named]
     : Object.keys(TARGETS).filter(
-        (k) => fs.existsSync(path.dirname(TARGETS[k].file)) && (uninstall || TARGETS[k].supported !== false)
+        (k) => fs.existsSync(TARGETS[k].detect || path.dirname(TARGETS[k].file)) && (uninstall || TARGETS[k].supported !== false)
       );
 
   if (!chosen.length) {
@@ -142,19 +274,48 @@ function main() {
       continue;
     }
 
-    const cfg = loadConfig(target.file);
-    target.root(cfg);
+    if (!uninstall && target.precheck) {
+      const problem = target.precheck();
+      if (problem) {
+        console.error(`✖ ${target.label}: nothing was installed.\n   ${problem}`);
+        // Com alvo explícito é erro; na detecção automática, segue para os outros.
+        if (named) process.exit(1);
+        continue;
+      }
+    }
+
+    if (target.layout === 'own') {
+      if (uninstall) uninstallOwn(target);
+      else installOwn(target);
+    } else if (target.layout === 'cursor') {
+      const cfg = loadConfig(target.file);
+      cfg.hooks = cfg.hooks || {};
+      cfg.version = cfg.version || 1;
+      if (uninstall) {
+        stripWardenvCursor(cfg.hooks);
+      } else {
+        for (const [event, [matcher, command]] of Object.entries(target.events)) {
+          ensureCursor(cfg.hooks, event, matcher, command, target.timeout);
+        }
+      }
+      writeAtomic(target.file, JSON.stringify(cfg, null, 2));
+    } else {
+      const cfg = loadConfig(target.file);
+      cfg.hooks = cfg.hooks || {};
+      if (uninstall) {
+        stripWardenv(cfg.hooks);
+      } else {
+        for (const [event, [matcher, command]] of Object.entries(target.events)) {
+          ensure(cfg.hooks, event, matcher, command, target.timeout, target.extra);
+        }
+      }
+      writeAtomic(target.file, JSON.stringify(cfg, null, 2));
+    }
 
     if (uninstall) {
-      stripWardenv(cfg.hooks);
-      fs.writeFileSync(target.file, JSON.stringify(cfg, null, 2));
       console.log(`🔓 wardenv removed from ${target.label}.`);
       continue;
     }
-
-    ensure(cfg.hooks, 'PreToolUse', PRE_MATCHER, PRE, 5);
-    ensure(cfg.hooks, 'PostToolUse', POST_MATCHER, POST, 5);
-    fs.writeFileSync(target.file, JSON.stringify(cfg, null, 2));
 
     console.log(`🔒 wardenv installed for ${target.label}.`);
     if (!target.verified) {

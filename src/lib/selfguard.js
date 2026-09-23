@@ -20,7 +20,16 @@ const STATE_DIR = path.join(os.homedir(), '.wardenv');
 // Instalado via npm, não há .git e o código fica protegido.
 const CODE_PROTECTED = !fs.existsSync(path.join(ROOT, '.git'));
 
-const AGENT_CONFIG_RE = /[\\/]\.claude[\\/]settings(\.local)?\.json$|[\\/]\.codex[\\/]hooks\.json$/i;
+const AGENT_CONFIG_RE = new RegExp(
+  [
+    /[\\/]\.claude[\\/]settings(\.local)?\.json$/,
+    /[\\/]\.codex[\\/]hooks\.json$/,
+    /[\\/]\.gemini[\\/]settings\.json$/,
+    /[\\/]\.cursor[\\/]hooks\.json$/,
+    /[\\/]\.copilot[\\/]hooks[\\/][^\\/]+\.json$/,
+  ].map((r) => r.source).join('|'),
+  'i'
+);
 
 function norm(p) {
   return path.resolve(String(p || '')).replace(/\\/g, '/').toLowerCase();
@@ -48,9 +57,14 @@ function wardenvHooks(text) {
   for (const [event, groups] of Object.entries(hooks)) {
     if (!Array.isArray(groups)) continue;
     for (const g of groups) {
-      for (const h of (g && Array.isArray(g.hooks) ? g.hooks : [])) {
-        if (typeof h.command === 'string' && /wardenv[\\/]+hooks[\\/]+(pre|post)-tool\.js/i.test(h.command)) {
-          out.add(`${event}|${g.matcher}|${h.command}`);
+      // Aninhado ({matcher, hooks: [...]}) ou plano (Copilot, Cursor: a
+      // própria entrada é o hook, com o comando em command/bash/powershell).
+      const list = g && Array.isArray(g.hooks) ? g.hooks : g ? [g] : [];
+      for (const h of list) {
+        for (const cmd of [h.command, h.bash, h.powershell]) {
+          if (typeof cmd === 'string' && /wardenv[\\/]+hooks[\\/]+(pre|post)-tool\.js/i.test(cmd)) {
+            out.add(`${event}|${g.matcher}|${cmd}`);
+          }
         }
       }
     }

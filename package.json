@@ -31,7 +31,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/wardenv.test.js test/cli.test.js test/hooks.test.js",
+    "test": "node --test test/wardenv.test.js test/cli.test.js test/hooks.test.js test/adapters.test.js",
     "install-hooks": "node src/install.js",
     "uninstall-hooks": "node src/install.js --uninstall"
   },

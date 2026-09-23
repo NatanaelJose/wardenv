@@ -79,9 +79,11 @@ test('cli: unlock recusa sem terminal interativo', () => {
   assert.equal(isUnlocked(dir, '.env'), false, 'nenhum grant deveria ter sido criado');
 });
 
-test('install: Codex não é instalado, mas o uninstall limpa entrada antiga', () => {
-  // No codex-cli 0.116 os hooks de ferramenta nunca disparam. Instalar
-  // mesmo assim imprimia "🔒 installed" e deixava o .env exposto.
+test('install: Codex (agente não verificado) instala e reinstala sem duplicar; uninstall preserva hook de terceiro', () => {
+  // Codex 0.116 (o testado antes) não tem hooks de ferramenta; 0.129+ tem, mas
+  // sem uma sessão real ainda não foi verificado ponta a ponta — daí o aviso
+  // UNVERIFIED. O que este teste garante é o instalador em si: não duplica
+  // entrada, e o uninstall não some com hooks de outra ferramenta.
   const fs = require('node:fs');
   const os = require('node:os');
   const { spawnSync } = require('node:child_process');
@@ -108,10 +110,14 @@ test('install: Codex não é instalado, mas o uninstall limpa entrada antiga', (
 
   assert.equal(runInstall([]).status, 0);
   assert.ok(hooked(path.join(home, '.claude', 'settings.json')), 'Claude Code deveria receber o hook');
+  assert.ok(hooked(codexFile), 'Codex deveria receber o hook (não verificado, mas instalado)');
+  assert.match(fs.readFileSync(codexFile, 'utf8'), /third-party/, 'hook de terceiro deveria sobreviver à instalação');
 
+  const beforeReinstall = (fs.readFileSync(codexFile, 'utf8').match(/wardenv[\\/]+hooks/gi) || []).length;
   const explicit = runInstall(['codex']);
-  assert.equal(explicit.status, 1, 'install codex deveria recusar');
-  assert.match(explicit.stderr, /not supported/);
+  assert.equal(explicit.status, 0, 'reinstalar não deveria falhar');
+  const afterReinstall = (fs.readFileSync(codexFile, 'utf8').match(/wardenv[\\/]+hooks/gi) || []).length;
+  assert.equal(afterReinstall, beforeReinstall, 'reinstalar não deveria duplicar a entrada');
 
   assert.equal(runInstall(['codex', '--uninstall']).status, 0);
   assert.equal(hooked(codexFile), false, 'entrada antiga do wardenv deveria sair');

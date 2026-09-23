@@ -107,32 +107,49 @@ GSD setup on the same machine.</sub>
 
 ### Agent support
 
-`wardenv install` detects the supported agents you have and installs into each.
+`wardenv install` detects the supported agents you have and installs into each. `wardenv
+install <agent>` targets one directly: `claude`, `gemini`, `cursor`, `codex`, `copilot`.
 
-| Agent | Status | Config |
-|-------|--------|--------|
-| Claude Code | ✅ verified end to end | `~/.claude/settings.json` |
-| Codex CLI | ❌ not supported (tested on 0.116.0) | |
+| Agent | Config | Read | Shell | Write | Output redaction | Self-disarm | Status |
+|-------|--------|------|-------|-------|-------------------|-------------|--------|
+| Claude Code | `~/.claude/settings.json` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ verified end to end |
+| Gemini CLI | `~/.gemini/settings.json` | ✅ | ✅ | ✅ | ⚠️ deny-only (see below) | ✅ | ⚠️ unverified — checked against 0.34 source, not a live session |
+| Cursor | `~/.cursor/hooks.json` | ✅ | ✅ | ✅ | ❌ no hook for it | ✅ | ⚠️ unverified — checked against 3.4.20 source, not a live session |
+| Codex CLI | `~/.codex/hooks.json` | — no read tool¹ | ✅ | ✅ (`apply_patch`) | ⚠️ deny-only (see below) | ✅ | ⚠️ unverified — needs Codex 0.129+; 0.116 has no tool hooks at all |
+| GitHub Copilot CLI | `~/.copilot/hooks/wardenv.json` | ✅ | ✅ | ✅ | ⚠️ needs a newer release | ✅ | ⚠️ unverified — needs Copilot CLI newer than 1.0.11, and PowerShell 7 on Windows (see below) |
 
-We tested Codex against a real session with a throwaway `.env`. It read the file, printed
-the values, ran a `curl` upload of it (which only failed because nothing was listening)
-and ran `wardenv unlock` on itself, and wardenv never saw any of it. Codex reads `~/.codex/hooks.json`, but in 0.116.0 it only fires
-`SessionStart`, `UserPromptSubmit` and `Stop`. There is no event before or after a tool
-runs, so there is nothing for wardenv to hook into.
+¹ Codex has no dedicated file-read tool; files are read through the shell, which the
+Shell row already covers.
 
-The installer now refuses `wardenv install codex` instead of printing "installed" over a
-guard that never runs. If an older version put wardenv into your Codex config, remove it
-with `wardenv uninstall codex`. If a later Codex release adds tool hooks, the adapter can
-come back.
+"Verified" means run against a real session with a throwaway `.env`: read the file, `cat`
+it, `curl` it out, write the value into a tracked file, and try to disarm wardenv itself —
+and confirm every one of those got blocked. Only Claude Code has been run through that
+protocol so far. The other four adapters were built and unit-tested against each agent's
+real hook payload (from source and official docs), and the installer was exercised end to
+end against a fake home directory, but nobody has yet pointed a live agent at them. Treat
+`⚠️ unverified` as "should work, not yet proven" — it's why the installer prints a warning
+after installing one.
 
-Blocking hooks also exist in Gemini CLI (`BeforeTool`), Cursor (`beforeShellExecution`,
-`beforeReadFile`) and Amp (`tool.call`). Adapters are straightforward, since the engine in
-`src/lib/` is runtime-agnostic and exposes `inspect()` / `scrub()`.
+Two things worth knowing before you rely on any of the unverified adapters:
 
-One caveat worth knowing before you port it: only Claude Code and Amp let a hook rewrite a
-tool's output. Gemini and Cursor (outside MCP) can block and modify input, but can't
-redact what came back. Door 3 degrades there from "redact the leak" to "block the
-command", which is blunter.
+- **Only Claude Code and Codex let a hook rewrite a tool's output**, and even there it's a
+  block-and-replace, not a true "redact and continue" — the model sees the redacted text
+  as the tool's result. Gemini can only deny with the redacted text as the reason. Cursor
+  has no hook for shell or file output at all, so door 3 (ricochet) can't be closed there —
+  a leak of a known secret through an otherwise-innocent command goes undetected.
+- **Codex 0.116.0 has no pre/post-tool hook at all** (confirmed against a real session: it
+  read a `.env`, uploaded it, and ran `wardenv unlock` on itself, and wardenv never saw any
+  of it). Tool hooks landed in 0.129, with `updatedInput` rewrites needed by other tools
+  arriving in 0.131. If you're on an older Codex, `wardenv uninstall codex` removes any
+  stale entry and `wardenv install codex` won't overwrite it with a guard that can't fire.
+- **Copilot CLI on Windows spawns hooks through `pwsh.exe`** (PowerShell 7), not the
+  built-in `powershell.exe`. If it's missing, the installer refuses instead of registering
+  a hook that silently never runs — install it with `winget install Microsoft.PowerShell`
+  and retry.
+
+Not supported at all: Trae, Factory Droid, Mistral Vibe, OpenCode, Pi/OMP, Hermes, and any
+agent that only offers a rules file (Cline, Windsurf, Kilo Code, Antigravity) — those can't
+block anything, only ask the model nicely to prefix a command.
 
 ---
 
@@ -253,20 +270,25 @@ A tool that reads your secrets shouldn't pull a supply chain along with it.
 
 ```
 ┌─────────────┐
-│    agent    │  Read / Bash / Write / MCP
+│    agent    │  Read / Bash / Write / MCP  (Claude, Gemini, Cursor, Codex, Copilot…)
 └──────┬──────┘
+       │  agent-specific JSON, on the agent's own hook event
        │
 ┌──────▼──────────────────────┐
-│  PreToolUse   hooks/         │   direct read, shell, exfiltration
+│  hooks/adapters/<agent>.js   │   normalize(): agent's payload → {kind, path, command, body, ...}
+└──────┬──────────────────────┘   render(): decision → the agent's own deny JSON
+       │
+┌──────▼──────────────────────┐
+│  hooks/decide.js              │   direct read, shell, exfiltration — runtime-agnostic
 │  ├─ targets.js  is it a vault?
 │  ├─ command.js  does it open one?
 │  └─ unlock.js   is there a pass?
 └──────┬──────────────────────┘
        │  allow ──► tool runs
-       │  deny  ──► blocked + structure handed back
+       │  deny  ──► blocked + structure handed back, in the agent's own format
        │
 ┌──────▼──────────────────────┐
-│  PostToolUse  hooks/         │   ricochet
+│  hooks/adapters/<agent>.js    │   ricochet (where the agent's post-tool event allows it)
 │  └─ redact.js   scrub output before the agent reads it
 └──────┬──────────────────────┘
        │
@@ -274,8 +296,12 @@ A tool that reads your secrets shouldn't pull a supply chain along with it.
 ```
 
 `src/lib/` holds the whole engine with no agent-specific code in it: `targets`, `command`,
-`redact`, `unlock`, `audit`. The Claude Code bindings live entirely in `hooks/`, which is
-what makes adapters for other runtimes straightforward.
+`redact`, `unlock`, `audit`. `hooks/decide.js` is the policy, also agent-agnostic — it
+works on the normalized shape, not on any agent's raw payload. Everything that knows an
+agent's actual JSON lives in `hooks/adapters/<agent>.js`; `hooks/pre-tool.js` and
+`hooks/post-tool.js` are just the glue that picks the right adapter (via `--agent <name>`,
+set by the installer) and wires it to `decide.js`. That's what makes adding another agent a
+matter of writing one adapter file, not touching the policy.
 
 ---
 
@@ -285,7 +311,7 @@ what makes adapters for other runtimes straightforward.
 npm test
 ```
 
-52 tests. The engine suite covers two classes, and the second matters as much as the
+90 tests. The engine suite covers two classes, and the second matters as much as the
 first:
 
 - Leak (false negative): a secret got through. A security failure.
@@ -293,7 +319,11 @@ first:
   with the tool uninstalled.
 
 A separate CLI suite covers what the human sees, including that a filesystem error
-surfaces as a message instead of a Node stack trace.
+surfaces as a message instead of a Node stack trace. `test/adapters.test.js` runs the same
+scenarios against every agent's actual hook payload — each one built from that agent's
+source or official docs — so a field read under the wrong name fails a test instead of
+becoming a silent bypass. It is not a substitute for a live session with the real agent,
+which is why the table above still says "unverified" for everything but Claude Code.
 
 ---
 

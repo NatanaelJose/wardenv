@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Hooks split into a per-agent adapter (`hooks/adapters/<agent>.js`) plus one shared policy
+(`hooks/decide.js`), so a new agent means writing one adapter, not touching the guard
+logic. Install and test `wardenv install gemini|cursor|codex|copilot`. None of these four
+has been run against a live agent session yet — the adapters are built from each agent's
+source or official docs and covered by `test/adapters.test.js`, and the installer was
+exercised end to end, but see the agent support table in `README.md` for exactly what's
+verified and what isn't before relying on any of them for real.
+
 An agent could grant itself an unlock. Found by testing Codex against a real session:
 it ran `wardenv unlock .env` and got a working grant. The same holes were open in Claude
 Code.

@@ -7,32 +7,23 @@
 // Roda mesmo em bypassPermissions / --dangerously-skip-permissions, porque
 // PreToolUse é enforcement de policy e não um prompt de permissão. É por isso
 // que isto vive num hook e não em permissions.deny.
+//
+// Uso: pre-tool.js [--agent <nome>]   (padrão: claude)
+// O adaptador traduz o payload do agente; a política vive em decide.js.
 
-const path = require('path');
-const { classifyPath } = require('../src/lib/targets');
-const { analyzeCommand } = require('../src/lib/command');
-const { summarizeEnvFile } = require('../src/lib/redact');
-const { isUnlocked, consumeUnlock } = require('../src/lib/unlock');
-const { log } = require('../src/lib/audit');
-const { checkWrite } = require('../src/lib/selfguard');
+const { decide } = require('./decide');
 
-const TOOLS_FILE = new Set(['Read', 'NotebookRead']);
-const TOOLS_WRITE = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+const ADAPTERS = {
+  claude: () => require('./adapters/claude'),
+  gemini: () => require('./adapters/gemini'),
+  codex: () => require('./adapters/codex'),
+  copilot: () => require('./adapters/copilot'),
+  cursor: () => require('./adapters/cursor'),
+};
 
-function deny(reason, extra) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-      ...(extra ? { additionalContext: extra } : {}),
-    },
-  }));
-  process.exit(0);
-}
-
-function allow() {
-  process.exit(0);
+function agentName(argv) {
+  const i = argv.indexOf('--agent');
+  return i >= 0 && argv[i + 1] ? argv[i + 1] : 'claude';
 }
 
 let input = '';
@@ -43,136 +34,40 @@ process.stdin.on('end', () => {
   clearTimeout(timer);
   let data;
   try {
-    data = JSON.parse(input);
+    data = JSON.parse(input.replace(/^﻿/, ''));
   } catch {
     process.exit(0); // nunca travar por payload malformado
   }
 
   try {
-    const tool = data.tool_name || '';
-    const ti = data.tool_input || {};
-    const cwd = data.cwd || process.cwd();
-    const agent = data.agent_id ? `subagente:${data.agent_type || '?'}` : 'principal';
+    let name = agentName(process.argv.slice(2));
 
-    // ---- Leitura de arquivo -------------------------------------------
-    if (TOOLS_FILE.has(tool)) {
-      const fp = ti.file_path || '';
-      const verdict = classifyPath(fp);
-      if (!verdict.secret) allow();
-
-      if (isUnlocked(cwd, fp)) {
-        consumeUnlock(cwd, fp);
-        log({ event: 'unlock-used', tool, path: fp, agent, cwd });
-        allow();
-      }
-
-      const base = path.basename(fp);
-      let ctx = `wardenv blocked reading "${base}".`;
-
-      // Em vez de só negar, entrega a FORMA sem o conteúdo: o agente quase
-      // sempre quer saber quais chaves existem, não os valores.
-      const summary = summarizeEnvFile(fp);
-      if (summary && summary.keys && summary.keys.length) {
-        const list = summary.keys
-          .map((k) => `  ${k.key}=<set, ${k.chars} chars>`)
-          .join('\n');
-        ctx += `\n\nFile structure (names only, values withheld):\n${list}`;
-        ctx += `\n\nIf you need a specific value, ask the user to run:\n  wardenv unlock ${base}`;
-      } else {
-        ctx += ' This file holds credentials and does not enter the context.';
-      }
-
-      log({ event: 'block-read', tool, path: fp, agent, cwd });
-      deny(`wardenv: "${base}" is a secret file — read blocked.`, ctx);
+    // O Cursor também carrega ~/.claude/settings.json (ligado por padrão) e
+    // manda o payload DELE ali, não o do Claude. Sem isto, o hook registrado
+    // como --agent claude leria os campos errados e deixaria tudo passar.
+    const cursor = require('./adapters/cursor');
+    if (cursor.detect(data)) {
+      // Já registrado direto em ~/.cursor/hooks.json: essa cópia se cala,
+      // para não negar (e logar) a mesma tentativa duas vezes.
+      if (name !== 'cursor' && cursor.registeredNatively()) process.exit(0);
+      name = 'cursor';
     }
 
-    // ---- Bash / PowerShell --------------------------------------------
-    if (tool === 'Bash' || tool === 'PowerShell') {
-      const cmd = ti.command || '';
-      const verdict = analyzeCommand(cmd);
-
-      if (verdict.action === 'block' && verdict.upload) {
-        log({ event: 'block-upload', tool, command: cmd, reason: verdict.reason, agent, cwd });
-        deny(
-          `wardenv: command sends a secret file over the network (${verdict.reason}).`,
-          'Secret files never leave the machine through an agent command, and ' +
-            'wardenv unlock does not change that. If a request needs a credential, ' +
-            'reference it by name from the environment instead of uploading the file.'
-        );
-      }
-
-      if (verdict.action === 'block') {
-        // O unlock granted via `wardenv unlock <file>` precisa valer aqui
-        // também — não só para a tool Read. Sem isto, `wardenv unlock .env`
-        // nunca destrava `cat .env`/`grep ... .env`, que é o caminho mais
-        // comum de leitura no dia a dia.
-        if (verdict.token && isUnlocked(cwd, verdict.token)) {
-          consumeUnlock(cwd, verdict.token);
-          log({ event: 'unlock-used', tool, path: verdict.token, agent, cwd });
-          allow();
-        }
-
-        log({ event: 'block-cmd', tool, command: cmd, reason: verdict.reason, agent, cwd });
-        deny(
-          `wardenv: command reads a secret file (${verdict.reason}).`,
-          'This command would expose credentials in the context. If you only need to ' +
-            'know WHICH keys exist, read .env.example. For a real value, ask the ' +
-            'user to run: wardenv unlock <file>'
-        );
-      }
-      allow();
+    const load = ADAPTERS[name];
+    if (!load) process.exit(0);
+    const adapter = load();
+    // Uma chamada pode mirar vários arquivos (patch do Codex): o primeiro
+    // deny vale pela chamada inteira.
+    let result = { action: 'allow' };
+    for (const attempt of [].concat(adapter.normalize(data))) {
+      result = decide(attempt);
+      if (result.action === 'deny') break;
     }
-
-    // ---- Escrita: impedir que segredo vá para arquivo versionado ------
-    if (TOOLS_WRITE.has(tool)) {
-      const fp = ti.file_path || '';
-      // MultiEdit não traz o texto num campo escalar: ele vem em `edits[]`,
-      // cada item com seu próprio `new_string`. Ler só os campos soltos fazia
-      // o corpo chegar sempre vazio aqui — a tool estava registrada no matcher
-      // e em TOOLS_WRITE, parecia guardada, e passava qualquer segredo.
-      const body = [
-        ti.content, ti.file_text, ti.new_string, ti.new_str,
-        ...(Array.isArray(ti.edits) ? ti.edits.map((e) => e && (e.new_string || e.new_str)) : []),
-      ].filter((s) => typeof s === 'string' && s).join('\n');
-
-      // Antes de tudo: a escrita desarma o wardenv? Vale até para destino que
-      // é cofre, então precisa vir antes do allow logo abaixo.
-      const pair = (e) => e && { old: e.old_string ?? e.old_str, new: e.new_string ?? e.new_str, all: !!e.replace_all };
-      const edits = Array.isArray(ti.edits)
-        ? ti.edits.map(pair)
-        : ti.old_string != null || ti.old_str != null
-          ? [pair(ti)]
-          : null;
-      const disarm = checkWrite({ filePath: fp, body, edits });
-      if (disarm.block) {
-        log({ event: 'block-disarm', tool, path: fp, reason: disarm.reason, agent, cwd });
-        deny(
-          `wardenv: this write would disarm wardenv (${disarm.reason}).`,
-          'The agent cannot change wardenv, its state, or its hook registration. ' +
-            'If this change is intended, ask the user to make it themselves.'
-        );
-      }
-
-      // Escrever NO .env é legítimo (criar/editar credencial local).
-      // O risco é o inverso: escrever segredo em arquivo NÃO-secreto.
-      if (classifyPath(fp).secret) allow();
-
-      const { redactText, collectKnownSecrets } = require('../src/lib/redact');
-      const known = collectKnownSecrets(cwd);
-      const { hits } = redactText(body, known);
-
-      if (hits.length) {
-        log({ event: 'block-write', tool, path: fp, hits, agent, cwd });
-        deny(
-          `wardenv: this content contains a secret (${hits.join(', ')}) and the destination "${path.basename(fp)}" is not a vault.`,
-          'Store the credential in .env and reference it by name (process.env.NAME). ' +
-            'Never write the literal value into a versioned file.'
-        );
-      }
-      allow();
-    }
-
-    allow();
+    // O Cursor exige JSON em todo caminho: seu render devolve "{}" mesmo ao
+    // liberar. Os outros agentes não precisam de resposta quando não há deny.
+    const out = adapter.render(result);
+    if (out) process.stdout.write(out);
+    process.exit(0);
   } catch {
     process.exit(0); // falha aberta: nunca quebrar a sessão
   }
