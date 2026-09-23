@@ -2,6 +2,70 @@
 
 ## Unreleased
 
+- **`cat .env` (and any shell read) never showed the key structure the README's own
+  example promises.** Only the native `Read` tool did. A shell read — `cat`, `grep`,
+  `Get-Content`, the most common way anyone actually reads a file — got a generic "this
+  would expose credentials" instead of `SECRET_KEY=<set, 16 chars>` plus the `wardenv
+  unlock` suggestion. Found live testing a Claude Code session. Fixed: both paths now
+  share the same key-listing logic.
+- 2 new tests, 99 total.
+
+A live Codex Desktop test session found two more real bypasses, both fixed:
+
+- **A prompt-level wrapper rule bypassed detection entirely.** A project instructing the
+  agent to always prefix shell commands with some proxy (found live via an `AGENTS.md` →
+  `RTK.md` chain telling Codex to run everything through `rtk`) made `rtk cat .env` read
+  as "block" downgraded to "redact" (mentions, not a read), and `rtk curl -F f=@.env ...`
+  — the most critical exfiltration case — read as fully allowed. The upload/read/self-disarm
+  checks all took "the first token" as the real binary; with a wrapper in front, that token
+  was `rtk`, not `cat`/`curl`. `sudo`/`doas` had the identical gap independent of any RTK.md.
+  Fixed: `rtk`, `sudo`, `doas` and `env VAR=value` are now recognized and skipped to find
+  the actual binary, in both the tokenizer and the self-disarm patterns.
+- **`curl.exe` didn't match the uploader list.** Only `curl` did; Codex commonly invokes
+  `curl.exe` explicitly (to avoid a PowerShell alias), and `curl.exe -F f=@.env ...` was
+  fully allowed. Fixed: the Windows executable extension (`.exe`/`.cmd`/`.bat`) is now
+  stripped before matching a binary name, shared between the uploader and reader checks.
+- 5 new tests, 97 total.
+- Documented, not changed: a hook that crashes or times out fails open by design (a
+  security tool that can freeze an agent's session over its own bug gets uninstalled), and
+  Codex's per-hook trust hash is invalidated by every reinstall (the command changes, so
+  the approved hash no longer matches) — `wardenv install codex`'s printed note now says to
+  reopen `/hooks` and re-approve after every reinstall.
+
+Post-merge audit of the multi-agent PR found and fixed 3 issues before any public
+announcement:
+
+- **`wardenv install codex` had stopped refusing on Codex versions with no tool hooks.**
+  The hard refusal that existed before multi-agent support was lost in the refactor:
+  installing on Codex 0.116–0.128 (no `PreToolUse`/`PostToolUse` at all) printed
+  `🔒 installed` with only an easy-to-miss `⚠ UNVERIFIED` note, exit code 0, while the
+  guard never actually ran. Fixed: the installer now checks the installed Codex's version
+  and refuses outright below 0.129.
+- **`wardenv uninstall copilot` didn't remove the hook.** It called the removal function
+  written for the nested `{matcher, hooks:[...]}` layout that Claude/Gemini/Codex use;
+  Copilot's own hooks file is flat (each array entry *is* the hook), so the function
+  silently matched nothing and the wardenv entries stayed registered while the command
+  printed success. Fixed: uninstall now uses the flat-layout removal (shared with Cursor).
+- **`wardenv install`/`uninstall` always exited 0**, even when the underlying `install.js`
+  process failed — including the Codex refusal above. `src/cli.js` spawned it but never
+  propagated its exit code. Fixed: the CLI now exits with the child process's actual code.
+- **Gemini's `read_many_files` didn't recognize a glob that targets a secret.** `include`
+  accepts patterns like `*.env`, not just literal paths; comparing the glob string itself
+  against known secret filenames never matched. Fixed: a glob is now checked against
+  secret-shaped filenames it would actually expand to.
+- **On Windows, the registered hook command was invalid PowerShell syntax, and the guard
+  never ran for Codex Desktop or Cursor.** Found live, testing against a real Codex
+  Desktop session: a `.env` read went straight through with no block, no error, nothing
+  in the log. Codex Desktop and Cursor spawn the hook command through PowerShell (not
+  `cmd.exe`), where a bare quoted path at the start of the line is a string, not a call —
+  the parser choked on the following `--agent` (`--` is PowerShell's decrement operator),
+  the hook never produced JSON, and wardenv failed open exactly as its own comment
+  documents ("never break the session"). Fixed: the installer now prefixes the command
+  with `&` for Codex, Cursor, and Copilot's `powershell` field (its `bash` field is
+  unaffected). Confirmed live: the exact registered command now runs correctly under
+  PowerShell.
+- 4 new tests, 92 total.
+
 Hooks split into a per-agent adapter (`hooks/adapters/<agent>.js`) plus one shared policy
 (`hooks/decide.js`), so a new agent means writing one adapter, not touching the guard
 logic. Install and test `wardenv install gemini|cursor|codex|copilot`. None of these four

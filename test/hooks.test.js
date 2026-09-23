@@ -203,3 +203,39 @@ test('Bash: unlock NÃO libera envio do arquivo pela rede', () => {
   const read = runHook({ cwd: dir, tool_name: 'Bash', tool_input: { command: 'cat .env' } });
   assert.equal(read, null, 'o unlock deveria continuar valendo para leitura');
 });
+
+// --------------------------------------------- estrutura do .env, via shell
+
+test('Bash: `cat .env` mostra a estrutura das chaves, igual à tool Read', () => {
+  // Achado real de teste manual: o bloco de Read sempre listou as chaves
+  // (SECRET_KEY=<set, N chars>); o bloco de Bash/PowerShell, o caminho de
+  // leitura mais comum no dia a dia, só dizia "isto exporia credenciais",
+  // sem listar nada — mesmo sabendo exatamente qual arquivo foi o alvo.
+  const dir = makeSandbox('shell-structure');
+  const res = runHook({ cwd: dir, tool_name: 'Bash', tool_input: { command: 'cat .env' } });
+  assert.ok(isDenied(res));
+  const ctx = res.hookSpecificOutput.additionalContext;
+  assert.match(ctx, /SECRET_KEY=<set, 16 chars>/, 'deveria listar a chave, não só negar');
+  assert.match(ctx, /wardenv unlock/, 'deveria sugerir o unlock');
+});
+
+test('PowerShell: `Get-Content .env` também mostra a estrutura das chaves', () => {
+  const dir = makeSandbox('powershell-structure');
+  const res = runHook({ cwd: dir, tool_name: 'PowerShell', tool_input: { command: 'Get-Content .env' } });
+  assert.ok(isDenied(res));
+  assert.match(res.hookSpecificOutput.additionalContext, /SECRET_KEY=<set, 16 chars>/);
+});
+
+test('Bash: `rtk cat .env` mostra a mesma estrutura de chaves que `cat .env` sem o wrapper', () => {
+  // Os dois fixes (ver através de rtk/sudo/env, e listar a estrutura no
+  // shell) mexem no mesmo caminho de código por ângulos diferentes — um no
+  // tokenizer, o outro no texto do deny. Nada garante sozinho que continuam
+  // combinando: sem este teste, um dos dois podia regredir silenciosamente
+  // só quando usado junto com o outro.
+  const dir = makeSandbox('shell-structure-rtk');
+  const direct = runHook({ cwd: dir, tool_name: 'Bash', tool_input: { command: 'cat .env' } });
+  const wrapped = runHook({ cwd: dir, tool_name: 'Bash', tool_input: { command: 'rtk cat .env' } });
+  assert.ok(isDenied(wrapped));
+  assert.match(wrapped.hookSpecificOutput.additionalContext, /SECRET_KEY=<set, 16 chars>/);
+  assert.deepStrictEqual(wrapped, direct, 'rtk na frente não deveria mudar a resposta em nada');
+});

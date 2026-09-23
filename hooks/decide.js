@@ -20,6 +20,24 @@ function deny(reason, context) {
 }
 
 /**
+ * Monta a estrutura do .env sem os valores, para o agente saber QUAIS chaves
+ * existem em vez de só ouvir "não". Compartilhado entre leitura direta
+ * (`Read`) e leitura por shell (`cat`/`grep`/...) — antes só a primeira
+ * mostrava a estrutura, e a segunda (o caminho mais comum no dia a dia) só
+ * dizia "this would expose credentials", sem listar nada.
+ */
+function envStructure(filePath) {
+  const summary = summarizeEnvFile(filePath);
+  if (!summary || !summary.keys || !summary.keys.length) return null;
+  const base = path.basename(filePath);
+  const list = summary.keys.map((k) => `  ${k.key}=<set, ${k.chars} chars>`).join('\n');
+  return (
+    `\n\nFile structure (names only, values withheld):\n${list}` +
+    `\n\nIf you need a specific value, ask the user to run:\n  wardenv unlock ${base}`
+  );
+}
+
+/**
  * @param {object} n  tentativa normalizada
  * @param {'read'|'shell'|'write'|'other'} n.kind
  * @param {string} n.tool      nome da tool no agente, só para o log
@@ -47,20 +65,11 @@ function decide(n) {
     }
 
     const base = path.basename(fp);
-    let ctx = `wardenv blocked reading "${base}".`;
-
     // Em vez de só negar, entrega a FORMA sem o conteúdo: o agente quase
     // sempre quer saber quais chaves existem, não os valores.
-    const summary = summarizeEnvFile(fp);
-    if (summary && summary.keys && summary.keys.length) {
-      const list = summary.keys
-        .map((k) => `  ${k.key}=<set, ${k.chars} chars>`)
-        .join('\n');
-      ctx += `\n\nFile structure (names only, values withheld):\n${list}`;
-      ctx += `\n\nIf you need a specific value, ask the user to run:\n  wardenv unlock ${base}`;
-    } else {
-      ctx += ' This file holds credentials and does not enter the context.';
-    }
+    const structure = envStructure(fp);
+    const ctx = `wardenv blocked reading "${base}".` +
+      (structure || ' This file holds credentials and does not enter the context.');
 
     log({ event: 'block-read', tool, path: fp, agent, cwd });
     return deny(`wardenv: "${base}" is a secret file — read blocked.`, ctx);
@@ -93,11 +102,16 @@ function decide(n) {
       }
 
       log({ event: 'block-cmd', tool, command: cmd, reason: verdict.reason, agent, cwd });
+      // Mesma estrutura de chaves que a leitura direta mostra — antes o shell
+      // (`cat`/`grep`, o caminho mais comum no dia a dia) só dizia "isto
+      // exporia credenciais", sem listar nada, mesmo sabendo o arquivo exato.
+      const structure = verdict.token ? envStructure(path.resolve(cwd, verdict.token)) : null;
       return deny(
         `wardenv: command reads a secret file (${verdict.reason}).`,
-        'This command would expose credentials in the context. If you only need to ' +
-          'know WHICH keys exist, read .env.example. For a real value, ask the ' +
-          'user to run: wardenv unlock <file>'
+        structure ||
+          'This command would expose credentials in the context. If you only need to ' +
+            'know WHICH keys exist, read .env.example. For a real value, ask the ' +
+            'user to run: wardenv unlock <file>'
       );
     }
     return ALLOW;

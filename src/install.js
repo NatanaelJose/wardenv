@@ -40,6 +40,22 @@ function onPath(bin) {
   return r.status === 0;
 }
 
+/** `<bin> --version` é pelo menos `major.minor.patch`? undefined se não der para checar. */
+function versionAtLeast(bin, major, minor) {
+  // shell:true é sempre necessário aqui — sem ele, spawnSync(cmd, {shell:false})
+  // trata a string inteira ("codex --version") como um único nome de
+  // executável e dá ENOENT em qualquer plataforma, não só Windows. No
+  // Windows há o motivo extra de resolver o .cmd que o npm instala pelo PATH.
+  // `bin` só chega aqui como literal fixo no código (nunca de fora), então
+  // montar a linha como string é seguro apesar do aviso de depreciação do Node.
+  const r = require('child_process').spawnSync(`${bin} --version`, { encoding: 'utf8', shell: true });
+  if (r.status !== 0 || !r.stdout) return undefined;
+  const m = r.stdout.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return undefined;
+  const [, a, b] = m.map(Number);
+  return a !== major ? a > major : b >= minor;
+}
+
 /**
  * Alvos suportados.
  *
@@ -89,8 +105,10 @@ const TARGETS = {
     file: path.join(os.homedir(), '.cursor', 'hooks.json'),
     verified: false,
     layout: 'cursor', // {version:1, hooks:{evento:[{command, matcher}]}} — entrada PLANA, sem "hooks:[...]"
+    // Cursor roda o comando via `powershell -c`, sem -NoProfile: um caminho
+    // entre aspas no começo da linha só vira string, não chamada — precisa do `&`.
     events: {
-      preToolUse: ['Shell|Read|Write|Delete|Grep', hookCmd('pre-tool.js', 'cursor')],
+      preToolUse: ['Shell|Read|Write|Delete|Grep', psSafe(hookCmd('pre-tool.js', 'cursor'))],
     },
     timeout: 10,
     note:
@@ -107,15 +125,36 @@ const TARGETS = {
     layout: 'nested',
     // Todo shell chega como "Bash", inclusive PowerShell no Windows. Escrita é
     // apply_patch. Não existe tool de leitura: arquivo se lê pelo shell.
+    //
+    // O Codex Desktop roda o comando do hook via PowerShell. Sem o `&`, um
+    // caminho entre aspas no início da linha ("C:\...\node.exe" "...") não é
+    // uma chamada — é só uma string — e o `--agent` seguinte quebra o parser
+    // (o `--` é interpretado como operador de decremento). O hook nunca roda,
+    // não produz JSON, e falha aberto: a leitura do .env passa sem bloqueio
+    // nenhum, silenciosamente. Reproduzido e confirmado nesta máquina.
     events: {
-      PreToolUse: ['^(Bash|apply_patch)$', hookCmd('pre-tool.js', 'codex')],
-      PostToolUse: ['^(Bash|mcp__.*)$', hookCmd('post-tool.js', 'codex')],
+      PreToolUse: ['^(Bash|apply_patch)$', psSafe(hookCmd('pre-tool.js', 'codex'))],
+      PostToolUse: ['^(Bash|mcp__.*)$', psSafe(hookCmd('post-tool.js', 'codex'))],
     },
     timeout: 5,
+    // Tool hooks (PreToolUse/PostToolUse) só existem a partir do Codex 0.129;
+    // versões antigas (esta máquina tinha 0.116) não têm NENHUM evento antes
+    // ou depois de uma tool. Instalar mesmo assim imprimia "🔒 installed" e
+    // deixava o .env exposto — o instalador agora recusa de vez, como fazia
+    // antes desta integração existir.
+    precheck: () =>
+      versionAtLeast('codex', 0, 129) === false
+        ? 'Codex CLI tool hooks (PreToolUse/PostToolUse) need 0.129 or newer. Your version\n' +
+          '   has none at all, so wardenv would never be called and .env stays exposed.\n' +
+          '   Update with: npm install -g @openai/codex@latest'
+        : null,
     note:
-      'Needs Codex 0.129 or newer (0.116 has no tool hooks at all; the desktop app\n' +
-      '   ships its own newer CLI). Codex runs a new hook only after you trust it:\n' +
-      '   open /hooks in Codex and approve the wardenv entries.',
+      'Checked against the Codex CLI source, not yet against a live session. Codex trusts\n' +
+      '   a hook by a hash of its exact command, so it only runs after you review and\n' +
+      '   approve it: open /hooks in Codex and approve the wardenv entries. Re-running\n' +
+      '   this installer changes the command and invalidates that approval every time —\n' +
+      '   reopen /hooks and re-approve after every reinstall, or the hook silently stops\n' +
+      '   running and wardenv sees nothing.',
   },
   copilot: {
     label: 'GitHub Copilot CLI',
@@ -124,10 +163,11 @@ const TARGETS = {
     verified: false,
     layout: 'own',
     // Sem matcher: até a 1.0.36 o Copilot ignorava o matcher do preToolUse.
-    // O adaptador filtra pela tool.
+    // O adaptador filtra pela tool. `powershell` roda via pwsh.exe -c, que
+    // exige o `&`; `bash` não — por isso os dois campos divergem.
     events: {
-      preToolUse: hookCmd('pre-tool.js', 'copilot'),
-      postToolUse: hookCmd('post-tool.js', 'copilot'),
+      preToolUse: { bash: hookCmd('pre-tool.js', 'copilot'), powershell: psSafe(hookCmd('pre-tool.js', 'copilot')) },
+      postToolUse: { bash: hookCmd('post-tool.js', 'copilot'), powershell: psSafe(hookCmd('post-tool.js', 'copilot')) },
     },
     timeout: 10,
     // No Windows o Copilot roda o campo `powershell` com pwsh.exe (PowerShell 7).
@@ -218,7 +258,14 @@ function writeAtomic(file, text) {
 }
 
 function installOwn(target) {
-  const entry = (command) => ({ type: 'command', bash: command, powershell: command, timeoutSec: target.timeout });
+  // Um item de target.events pode ser um comando único (mesma sintaxe nos
+  // dois shells) ou {bash, powershell} quando eles precisam divergir — no
+  // Windows o Copilot roda `powershell` via pwsh.exe, que exige o prefixo
+  // `&` para um caminho entre aspas ser chamada e não string; `bash` não.
+  const entry = (command) => {
+    const c = typeof command === 'string' ? { bash: command, powershell: command } : command;
+    return { type: 'command', ...c, timeoutSec: target.timeout };
+  };
   const cfg = { version: 1, hooks: {} };
   for (const [event, command] of Object.entries(target.events)) cfg.hooks[event] = [entry(command)];
   if (fs.existsSync(target.file)) loadConfig(target.file); // só pelo backup
@@ -229,8 +276,13 @@ function installOwn(target) {
 function uninstallOwn(target) {
   // O arquivo é do wardenv, mas só apaga se ainda for: nunca remove algo que
   // o usuário tenha reaproveitado com hooks próprios.
+  //
+  // Layout 'own' é PLANO como o do Cursor — cada entrada do array JÁ é o hook
+  // ({type, bash, powershell, ...}), sem "hooks:[...]" aninhado. stripWardenv
+  // olha para dentro de group.hooks[] e nunca encontra nada nesse formato: a
+  // limpeza virava um no-op silencioso, então usa a mesma função do Cursor.
   const cfg = loadConfig(target.file);
-  stripWardenv(cfg.hooks || {});
+  stripWardenvCursor(cfg.hooks || {});
   const left = Object.values(cfg.hooks || {}).some((v) => Array.isArray(v) && v.some((h) => !isWardenv(h)));
   if (left) writeAtomic(target.file, JSON.stringify(cfg, null, 2));
   else fs.unlinkSync(target.file);

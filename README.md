@@ -115,7 +115,7 @@ install <agent>` targets one directly: `claude`, `gemini`, `cursor`, `codex`, `c
 | Claude Code | `~/.claude/settings.json` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ verified end to end |
 | Gemini CLI | `~/.gemini/settings.json` | ✅ | ✅ | ✅ | ⚠️ deny-only (see below) | ✅ | ⚠️ unverified — checked against 0.34 source, not a live session |
 | Cursor | `~/.cursor/hooks.json` | ✅ | ✅ | ✅ | ❌ no hook for it | ✅ | ⚠️ unverified — checked against 3.4.20 source, not a live session |
-| Codex CLI | `~/.codex/hooks.json` | — no read tool¹ | ✅ | ✅ (`apply_patch`) | ⚠️ deny-only (see below) | ✅ | ⚠️ unverified — needs Codex 0.129+; 0.116 has no tool hooks at all |
+| Codex CLI | `~/.codex/hooks.json` | — no read tool¹ | ✅ | ✅ (`apply_patch`) | ⚠️ deny-only (see below) | ✅ | ⚠️ close to verified — a live 0.156.1 Desktop run blocked every case (see below), but the unlock happy path and subagents haven't been exercised yet |
 | GitHub Copilot CLI | `~/.copilot/hooks/wardenv.json` | ✅ | ✅ | ✅ | ⚠️ needs a newer release | ✅ | ⚠️ unverified — needs Copilot CLI newer than 1.0.11, and PowerShell 7 on Windows (see below) |
 
 ¹ Codex has no dedicated file-read tool; files are read through the shell, which the
@@ -140,12 +140,21 @@ Two things worth knowing before you rely on any of the unverified adapters:
 - **Codex 0.116.0 has no pre/post-tool hook at all** (confirmed against a real session: it
   read a `.env`, uploaded it, and ran `wardenv unlock` on itself, and wardenv never saw any
   of it). Tool hooks landed in 0.129, with `updatedInput` rewrites needed by other tools
-  arriving in 0.131. If you're on an older Codex, `wardenv uninstall codex` removes any
-  stale entry and `wardenv install codex` won't overwrite it with a guard that can't fire.
+  arriving in 0.131. `wardenv install codex` checks your installed Codex's version and
+  refuses outright below 0.129, instead of printing "installed" over a guard that can't
+  fire; `wardenv uninstall codex` still removes any stale entry from an older install.
 - **Copilot CLI on Windows spawns hooks through `pwsh.exe`** (PowerShell 7), not the
   built-in `powershell.exe`. If it's missing, the installer refuses instead of registering
   a hook that silently never runs — install it with `winget install Microsoft.PowerShell`
   and retry.
+- **On Windows, Codex Desktop and Cursor run the registered hook command through
+  PowerShell, not `cmd.exe`.** A bare `"C:\...\node.exe" "...\pre-tool.js" --agent codex`
+  is not valid PowerShell syntax there — a quoted path at the start of a line is a string,
+  not a call, so the parser chokes on the next token (`--agent` reads as the decrement
+  operator). The hook then never produces JSON and wardenv fails open: the read goes
+  through with no error visible anywhere. This was found live, against a real Codex
+  Desktop session, and is why the installer now prefixes the command with `&` for Codex,
+  Cursor, and Copilot's `powershell` field.
 
 Not supported at all: Trae, Factory Droid, Mistral Vibe, OpenCode, Pi/OMP, Hermes, and any
 agent that only offers a rules file (Cline, Windsurf, Kilo Code, Antigravity) — those can't
@@ -338,6 +347,22 @@ It doesn't retroactively clean context from sessions that ran before install.
 Shell parsing is heuristic. Deliberate obfuscation like `c""at .e""nv` sits outside the
 threat model. A helpful agent taking the obvious path is inside it. wardenv is a guardrail
 against accident, not an adversary sandbox.
+
+A hook that crashes, times out, or gets malformed input **fails open** — the command runs
+unblocked — on purpose: a security tool that can freeze an agent's session over its own bug
+gets uninstalled. This is a real tradeoff, not an oversight: it means a wardenv bug (or a
+transport failure between the agent and the hook, like the PowerShell one below) fails
+silently rather than loudly. There is no separate "block on internal error" mode, and
+adding one would need to weigh that against the friction cost above.
+
+**A prompt-level rule that always prefixes a command (like an `AGENTS.md`/`RTK.md` line
+telling the agent to run everything through some proxy) does not bypass the block.** wardenv
+looks through `rtk`, `sudo`, `doas` and `env VAR=value` at the front of a command to find
+the actual binary — `rtk cat .env` and `sudo curl -F f=@.env ...` are still caught. This
+list is intentionally closed: an unrecognized wrapper is treated as the real command, not
+as "one more layer to see through", so this doesn't quietly widen into "trust anything".
+Confirmed live, agent prefixing through its own real RTK.md: `rtk cat .env` denied
+identically to `cat .env` in both Claude Code and Codex Desktop sessions.
 
 ---
 

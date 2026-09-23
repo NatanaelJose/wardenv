@@ -98,14 +98,59 @@ function stripQuotes(tok) {
   return tok.replace(/^['"]|['"]$/g, '');
 }
 
+// Proxies transparentes que reescrevem `cmd real` como `wrapper cmd real`, sem
+// mudar o que o comando faz. Achado real: um projeto com RTK.md instrui o
+// Codex a sempre prefixar `rtk`, e sem descartar isto o "binário" detectado
+// vira `rtk`, não `cat`/`curl` — `rtk cat .env` caía de bloqueio para redação,
+// e `rtk curl -F f=@.env` passava liso. `sudo` e `doas` têm o mesmo problema,
+// só que sem depender de nenhum RTK.md.
+const COMMAND_WRAPPERS = ['rtk', 'sudo', 'doas'];
+
+/**
+ * Descarta um prefixo de wrapper conhecido (`rtk`, `sudo`, `doas`, e
+ * atribuições de ambiente como `env FOO=1`) para achar o binário real.
+ * Não remove nada além disso: um token desconhecido é assumido como o
+ * próprio comando, nunca como "mais um wrapper" — a lista é fechada de
+ * propósito para não enfraquecer a detecção.
+ */
+function skipWrappers(tokens) {
+  let i = 0;
+  while (i < tokens.length) {
+    const t = tokens[i].toLowerCase();
+    if (COMMAND_WRAPPERS.includes(t)) { i++; continue; }
+    if (t === 'env' && tokens[i + 1] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i + 1])) {
+      i += 2;
+      while (tokens[i] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+      continue;
+    }
+    break;
+  }
+  return tokens.slice(i);
+}
+
 /**
  * Quebra a linha em tokens, achatando pipes/&&/; para varrer tudo.
  */
 function tokenize(cmd) {
-  return String(cmd || '')
-    .split(/[\s|;&()<>]+/)
-    .map(stripQuotes)
-    .filter(Boolean);
+  return skipWrappers(
+    String(cmd || '')
+      .split(/[\s|;&()<>]+/)
+      .map(stripQuotes)
+      .filter(Boolean)
+  );
+}
+
+/**
+ * O nome do binário sem caminho e sem extensão executável do Windows.
+ * Sem tirar a extensão, `curl.exe -F f=@.env` (o que o Codex costuma invocar,
+ * para não pegar um alias do PowerShell) nunca batia com a lista `curl` de
+ * UPLOADERS/READERS — o upload passava liso.
+ */
+function baseCommand(token) {
+  return (token || '')
+    .toLowerCase()
+    .split('/').pop().split('\\').pop()
+    .replace(/\.(exe|cmd|bat|com)$/, '');
 }
 
 /**
@@ -145,7 +190,11 @@ function findSecretPathToken(cmd) {
 // `&` é o operador de chamada do PowerShell (`& wardenv unlock`), e `cmd /c`
 // usa flag com barra. Os dois passavam por fora. O nome pode vir com a extensão
 // do shim que o npm instala no Windows (`wardenv.cmd`, `wardenv.ps1`).
-const CMD_HEAD = String.raw`(?:^\s*(?:&\s*)?(?:(?:bash|sh|zsh|cmd|powershell|pwsh|npx|npm\s+exec|env|eval|exec)\s+(?:[-/]\w+\s+)*)?)`;
+// rtk/sudo/doas entram na mesma lista de interpretadores/wrappers "vistos
+// através": um proxy transparente que reescreve `cmd real` como
+// `wrapper cmd real` não pode esconder um desarme atrás de si. Ver
+// skipWrappers(), que aplica o mesmo princípio à detecção de leitura/upload.
+const CMD_HEAD = String.raw`(?:^\s*(?:&\s*)?(?:(?:bash|sh|zsh|cmd|powershell|pwsh|npx|npm\s+exec|env|eval|exec|rtk|sudo|doas)\s+(?:[-/]\w+\s+)*)?)`;
 const WARDENV_BIN = String.raw`["']?wardenv(?:\.cmd|\.ps1|\.exe)?["']?`;
 
 const SELF_DISARM = [
@@ -238,7 +287,7 @@ function analyzeCommand(cmd) {
   // Envio de segredo pela rede. Também no texto cru: `-F "f=@.env"` entre aspas
   // seria apagado por stripLiterals.
   for (const seg of raw.split(/&&|\|\||[;|]/)) {
-    const bin = (tokenize(seg)[0] || '').toLowerCase().split('/').pop().split('\\').pop();
+    const bin = baseCommand(tokenize(seg)[0]);
     if (!UPLOADERS.includes(bin)) continue;
     const src = findUploadSource(seg);
     if (src) {
@@ -266,8 +315,7 @@ function analyzeCommand(cmd) {
     const found = findSecretPathToken(seg);
     if (!found.hit) continue;
 
-    const first = (tokenize(seg)[0] || '').toLowerCase();
-    const bin = first.split('/').pop().split('\\').pop();
+    const bin = baseCommand(tokenize(seg)[0]);
 
     // Comando de leitura + alvo de segredo = bloqueio duro.
     if (READERS.includes(bin)) {
