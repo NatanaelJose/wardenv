@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+A live Codex Desktop test session found two more real bypasses, both fixed:
+
+- **A prompt-level wrapper rule bypassed detection entirely.** A project instructing the
+  agent to always prefix shell commands with some proxy (found live via an `AGENTS.md` →
+  `RTK.md` chain telling Codex to run everything through `rtk`) made `rtk cat .env` read
+  as "block" downgraded to "redact" (mentions, not a read), and `rtk curl -F f=@.env ...`
+  — the most critical exfiltration case — read as fully allowed. The upload/read/self-disarm
+  checks all took "the first token" as the real binary; with a wrapper in front, that token
+  was `rtk`, not `cat`/`curl`. `sudo`/`doas` had the identical gap independent of any RTK.md.
+  Fixed: `rtk`, `sudo`, `doas` and `env VAR=value` are now recognized and skipped to find
+  the actual binary, in both the tokenizer and the self-disarm patterns.
+- **`curl.exe` didn't match the uploader list.** Only `curl` did; Codex commonly invokes
+  `curl.exe` explicitly (to avoid a PowerShell alias), and `curl.exe -F f=@.env ...` was
+  fully allowed. Fixed: the Windows executable extension (`.exe`/`.cmd`/`.bat`) is now
+  stripped before matching a binary name, shared between the uploader and reader checks.
+- 5 new tests, 97 total.
+- Documented, not changed: a hook that crashes or times out fails open by design (a
+  security tool that can freeze an agent's session over its own bug gets uninstalled), and
+  Codex's per-hook trust hash is invalidated by every reinstall (the command changes, so
+  the approved hash no longer matches) — `wardenv install codex`'s printed note now says to
+  reopen `/hooks` and re-approve after every reinstall.
+
 Post-merge audit of the multi-agent PR found and fixed 3 issues before any public
 announcement:
 

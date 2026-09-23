@@ -348,6 +348,20 @@ Shell parsing is heuristic. Deliberate obfuscation like `c""at .e""nv` sits outs
 threat model. A helpful agent taking the obvious path is inside it. wardenv is a guardrail
 against accident, not an adversary sandbox.
 
+A hook that crashes, times out, or gets malformed input **fails open** — the command runs
+unblocked — on purpose: a security tool that can freeze an agent's session over its own bug
+gets uninstalled. This is a real tradeoff, not an oversight: it means a wardenv bug (or a
+transport failure between the agent and the hook, like the PowerShell one below) fails
+silently rather than loudly. There is no separate "block on internal error" mode, and
+adding one would need to weigh that against the friction cost above.
+
+**A prompt-level rule that always prefixes a command (like an `AGENTS.md`/`RTK.md` line
+telling the agent to run everything through some proxy) does not bypass the block.** wardenv
+looks through `rtk`, `sudo`, `doas` and `env VAR=value` at the front of a command to find
+the actual binary — `rtk cat .env` and `sudo curl -F f=@.env ...` are still caught. This
+list is intentionally closed: an unrecognized wrapper is treated as the real command, not
+as "one more layer to see through", so this doesn't quietly widen into "trust anything".
+
 ---
 
 ## Contributing

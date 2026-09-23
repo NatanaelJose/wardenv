@@ -147,9 +147,12 @@ const TARGETS = {
           '   Update with: npm install -g @openai/codex@latest'
         : null,
     note:
-      'Checked against the Codex CLI source, not yet against a live session. Codex runs\n' +
-      '   a new hook only after you trust it: open /hooks in Codex and approve the\n' +
-      '   wardenv entries, or every step below silently no-ops.',
+      'Checked against the Codex CLI source, not yet against a live session. Codex trusts\n' +
+      '   a hook by a hash of its exact command, so it only runs after you review and\n' +
+      '   approve it: open /hooks in Codex and approve the wardenv entries. Re-running\n' +
+      '   this installer changes the command and invalidates that approval every time —\n' +
+      '   reopen /hooks and re-approve after every reinstall, or the hook silently stops\n' +
+      '   running and wardenv sees nothing.',
   },
   copilot: {
     label: 'GitHub Copilot CLI',
