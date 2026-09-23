@@ -42,11 +42,13 @@ function onPath(bin) {
 
 /** `<bin> --version` é pelo menos `major.minor.patch`? undefined se não der para checar. */
 function versionAtLeast(bin, major, minor) {
-  // No Windows um binário instalado via npm é um .cmd; sem shell:true o
-  // spawnSync não resolve a extensão pelo PATH e falha silenciosamente. `bin`
-  // só chega aqui como literal fixo no código (nunca de fora), então montar
-  // a linha como string é seguro apesar do aviso de depreciação do Node.
-  const r = require('child_process').spawnSync(`${bin} --version`, { encoding: 'utf8', shell: WIN });
+  // shell:true é sempre necessário aqui — sem ele, spawnSync(cmd, {shell:false})
+  // trata a string inteira ("codex --version") como um único nome de
+  // executável e dá ENOENT em qualquer plataforma, não só Windows. No
+  // Windows há o motivo extra de resolver o .cmd que o npm instala pelo PATH.
+  // `bin` só chega aqui como literal fixo no código (nunca de fora), então
+  // montar a linha como string é seguro apesar do aviso de depreciação do Node.
+  const r = require('child_process').spawnSync(`${bin} --version`, { encoding: 'utf8', shell: true });
   if (r.status !== 0 || !r.stdout) return undefined;
   const m = r.stdout.match(/(\d+)\.(\d+)\.(\d+)/);
   if (!m) return undefined;
