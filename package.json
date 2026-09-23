@@ -43,5 +43,9 @@
   "homepage": "https://github.com/NatanaelJose/wardenv#readme",
   "bugs": {
     "url": "https://github.com/NatanaelJose/wardenv/issues"
+  },
+  "funding": {
+    "type": "individual",
+    "url": "https://www.buymeacoffee.com/natanaelisidoro"
   }
 }

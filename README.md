@@ -9,6 +9,8 @@
 [![tests](https://img.shields.io/badge/tests-52%20passing-black)](./test/wardenv.test.js)
 [![deps](https://img.shields.io/badge/dependencies-0-black)](./package.json)
 
+<a href="https://www.buymeacoffee.com/natanaelisidoro"><img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=natanaelisidoro&button_colour=FF5F5F&font_colour=ffffff&font_family=Poppins&outline_colour=000000&coffee_colour=FFDD00" alt="Buy me a coffee" height="40"></a>
+
 </div>
 
 ---
