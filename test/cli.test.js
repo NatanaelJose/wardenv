@@ -170,3 +170,47 @@ test('install: Codex sem hooks de ferramenta (< 0.129) recusa a instalação em 
     assert.ok(!fs.existsSync(codexFile), 'nada deveria ter sido escrito');
   });
 });
+
+test('install: o comando registrado para Cursor é sintaxe PowerShell válida no Windows', () => {
+  // Achado real: o hooks.json registrava o comando do hook sem o prefixo `&`.
+  // No Windows, quando o agente spawna o comando via PowerShell (Cursor e o
+  // Codex Desktop fazem isso; o Copilot roda seu campo powershell via
+  // pwsh.exe), um caminho entre aspas no início da linha é só uma STRING, não
+  // uma chamada: o parser lia até o próximo token como nova expressão e
+  // travava em "--agent" (o `--` é o operador de decremento do PowerShell).
+  // O hook nunca produzia JSON e o wardenv falhava aberto -- silenciosamente,
+  // sem nenhum erro visível ao usuário. Reproduzido ao vivo contra um Codex
+  // Desktop real antes deste fix.
+  if (process.platform !== 'win32') return; // o bug é específico do PowerShell no Windows
+
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const { spawnSync } = require('node:child_process');
+  const INSTALL = path.join(__dirname, '..', 'src', 'install.js');
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-ps-syntax-'));
+  const cursorDir = path.join(home, '.cursor');
+  fs.mkdirSync(cursorDir);
+
+  const runInstall = (args) => spawnSync(process.execPath, ['-e', [
+    `require('os').homedir = () => ${JSON.stringify(home)};`,
+    `process.argv = [process.execPath, 'install.js', ...${JSON.stringify(args)}];`,
+    `require(${JSON.stringify(INSTALL)});`,
+  ].join('\n')], { encoding: 'utf8' });
+
+  runInstall(['cursor']);
+  const cursorFile = path.join(cursorDir, 'hooks.json');
+  const cfg = JSON.parse(fs.readFileSync(cursorFile, 'utf8'));
+  const registeredCommand = cfg.hooks.preToolUse[0].command;
+
+  // Roda a string de comando REGISTRADA de verdade dentro de um .ps1, o
+  // mesmo jeito que quebrava antes -- sem simular o payload direto no node.
+  const script = path.join(home, 'probe.ps1');
+  fs.writeFileSync(script, registeredCommand);
+  const payload = JSON.stringify({ cwd: home, tool_name: 'Shell', tool_input: { command: 'cat .env' } });
+  const r = spawnSync('powershell', ['-NoProfile', '-File', script], { input: payload, encoding: 'utf8' });
+
+  assert.equal(r.status, 0, `comando registrado deveria rodar em PowerShell sem erro de sintaxe\n${r.stderr}`);
+  const out = JSON.parse(r.stdout.trim());
+  assert.equal(out.permission, 'deny', 'deveria negar `cat .env`');
+});

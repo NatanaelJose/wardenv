@@ -103,8 +103,10 @@ const TARGETS = {
     file: path.join(os.homedir(), '.cursor', 'hooks.json'),
     verified: false,
     layout: 'cursor', // {version:1, hooks:{evento:[{command, matcher}]}} — entrada PLANA, sem "hooks:[...]"
+    // Cursor roda o comando via `powershell -c`, sem -NoProfile: um caminho
+    // entre aspas no começo da linha só vira string, não chamada — precisa do `&`.
     events: {
-      preToolUse: ['Shell|Read|Write|Delete|Grep', hookCmd('pre-tool.js', 'cursor')],
+      preToolUse: ['Shell|Read|Write|Delete|Grep', psSafe(hookCmd('pre-tool.js', 'cursor'))],
     },
     timeout: 10,
     note:
@@ -121,9 +123,16 @@ const TARGETS = {
     layout: 'nested',
     // Todo shell chega como "Bash", inclusive PowerShell no Windows. Escrita é
     // apply_patch. Não existe tool de leitura: arquivo se lê pelo shell.
+    //
+    // O Codex Desktop roda o comando do hook via PowerShell. Sem o `&`, um
+    // caminho entre aspas no início da linha ("C:\...\node.exe" "...") não é
+    // uma chamada — é só uma string — e o `--agent` seguinte quebra o parser
+    // (o `--` é interpretado como operador de decremento). O hook nunca roda,
+    // não produz JSON, e falha aberto: a leitura do .env passa sem bloqueio
+    // nenhum, silenciosamente. Reproduzido e confirmado nesta máquina.
     events: {
-      PreToolUse: ['^(Bash|apply_patch)$', hookCmd('pre-tool.js', 'codex')],
-      PostToolUse: ['^(Bash|mcp__.*)$', hookCmd('post-tool.js', 'codex')],
+      PreToolUse: ['^(Bash|apply_patch)$', psSafe(hookCmd('pre-tool.js', 'codex'))],
+      PostToolUse: ['^(Bash|mcp__.*)$', psSafe(hookCmd('post-tool.js', 'codex'))],
     },
     timeout: 5,
     // Tool hooks (PreToolUse/PostToolUse) só existem a partir do Codex 0.129;
@@ -149,10 +158,11 @@ const TARGETS = {
     verified: false,
     layout: 'own',
     // Sem matcher: até a 1.0.36 o Copilot ignorava o matcher do preToolUse.
-    // O adaptador filtra pela tool.
+    // O adaptador filtra pela tool. `powershell` roda via pwsh.exe -c, que
+    // exige o `&`; `bash` não — por isso os dois campos divergem.
     events: {
-      preToolUse: hookCmd('pre-tool.js', 'copilot'),
-      postToolUse: hookCmd('post-tool.js', 'copilot'),
+      preToolUse: { bash: hookCmd('pre-tool.js', 'copilot'), powershell: psSafe(hookCmd('pre-tool.js', 'copilot')) },
+      postToolUse: { bash: hookCmd('post-tool.js', 'copilot'), powershell: psSafe(hookCmd('post-tool.js', 'copilot')) },
     },
     timeout: 10,
     // No Windows o Copilot roda o campo `powershell` com pwsh.exe (PowerShell 7).
@@ -243,7 +253,14 @@ function writeAtomic(file, text) {
 }
 
 function installOwn(target) {
-  const entry = (command) => ({ type: 'command', bash: command, powershell: command, timeoutSec: target.timeout });
+  // Um item de target.events pode ser um comando único (mesma sintaxe nos
+  // dois shells) ou {bash, powershell} quando eles precisam divergir — no
+  // Windows o Copilot roda `powershell` via pwsh.exe, que exige o prefixo
+  // `&` para um caminho entre aspas ser chamada e não string; `bash` não.
+  const entry = (command) => {
+    const c = typeof command === 'string' ? { bash: command, powershell: command } : command;
+    return { type: 'command', ...c, timeoutSec: target.timeout };
+  };
   const cfg = { version: 1, hooks: {} };
   for (const [event, command] of Object.entries(target.events)) cfg.hooks[event] = [entry(command)];
   if (fs.existsSync(target.file)) loadConfig(target.file); // só pelo backup

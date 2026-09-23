@@ -96,6 +96,11 @@ below) is `—`, not a fail.
 - **Codex requires you to trust a new/changed hook before it runs** — open `/hooks`
   inside Codex and approve the wardenv entries after installing, or every step below will
   silently no-op.
+- **On Windows, this already caused a real leak once** (see CHANGELOG): Codex Desktop runs
+  the hook command via PowerShell, and the command registered before this fix wasn't valid
+  PowerShell syntax, so it silently failed and wardenv never saw anything. Confirm the
+  registered command in `~/.codex/hooks.json` starts with `& "..."`, not a bare quoted
+  path — if it doesn't, you're testing an install from before the fix.
 - There's no dedicated file-read tool in Codex — step 1 above only applies via step 2
   (shell read); mark step 1 as `—` for Codex, not a fail.
 - Step 4 (write) goes through `apply_patch` — ask it to edit the file with a normal patch,

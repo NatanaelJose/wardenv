@@ -147,6 +147,14 @@ Two things worth knowing before you rely on any of the unverified adapters:
   built-in `powershell.exe`. If it's missing, the installer refuses instead of registering
   a hook that silently never runs — install it with `winget install Microsoft.PowerShell`
   and retry.
+- **On Windows, Codex Desktop and Cursor run the registered hook command through
+  PowerShell, not `cmd.exe`.** A bare `"C:\...\node.exe" "...\pre-tool.js" --agent codex`
+  is not valid PowerShell syntax there — a quoted path at the start of a line is a string,
+  not a call, so the parser chokes on the next token (`--agent` reads as the decrement
+  operator). The hook then never produces JSON and wardenv fails open: the read goes
+  through with no error visible anywhere. This was found live, against a real Codex
+  Desktop session, and is why the installer now prefixes the command with `&` for Codex,
+  Cursor, and Copilot's `powershell` field.
 
 Not supported at all: Trae, Factory Droid, Mistral Vibe, OpenCode, Pi/OMP, Hermes, and any
 agent that only offers a rules file (Cline, Windsurf, Kilo Code, Antigravity) — those can't

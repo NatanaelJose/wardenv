@@ -23,7 +23,18 @@ announcement:
   accepts patterns like `*.env`, not just literal paths; comparing the glob string itself
   against known secret filenames never matched. Fixed: a glob is now checked against
   secret-shaped filenames it would actually expand to.
-- 3 new tests, 91 total.
+- **On Windows, the registered hook command was invalid PowerShell syntax, and the guard
+  never ran for Codex Desktop or Cursor.** Found live, testing against a real Codex
+  Desktop session: a `.env` read went straight through with no block, no error, nothing
+  in the log. Codex Desktop and Cursor spawn the hook command through PowerShell (not
+  `cmd.exe`), where a bare quoted path at the start of the line is a string, not a call —
+  the parser choked on the following `--agent` (`--` is PowerShell's decrement operator),
+  the hook never produced JSON, and wardenv failed open exactly as its own comment
+  documents ("never break the session"). Fixed: the installer now prefixes the command
+  with `&` for Codex, Cursor, and Copilot's `powershell` field (its `bash` field is
+  unaffected). Confirmed live: the exact registered command now runs correctly under
+  PowerShell.
+- 4 new tests, 92 total.
 
 Hooks split into a per-agent adapter (`hooks/adapters/<agent>.js`) plus one shared policy
 (`hooks/decide.js`), so a new agent means writing one adapter, not touching the guard
