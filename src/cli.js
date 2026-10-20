@@ -23,7 +23,7 @@ function die(msg) {
 function help() {
   console.log(`wardenv — a warden for your env
 
-  wardenv install [agent]     register hooks (claude, gemini, codex, copilot)
+  wardenv install [agent]     register hooks (claude, gemini, cursor, codex, copilot, antigravity)
   wardenv uninstall [agent]   remove hooks
   wardenv status              what's guarded here, and any open passes
   wardenv keys [file]         key NAMES from .env — never the values

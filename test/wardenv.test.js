@@ -725,6 +725,46 @@ test('auto-desarme: escrita no estado, no código ou na config do agente', () =>
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previousCodexHome;
   }
+  assert.equal(checkWrite({ filePath: settings, body: `\uFEFF${raw}` }).block, true, 'BOM novo quebra config do Claude');
+
+  // Antigravity guarda o hook numa chave nomeada. `enabled: false` desarma
+  // sem apagar o comando e precisa ser detectado como alteração da assinatura.
+  const antigravity = pathMod.join(home, '.gemini', 'config', 'hooks.json');
+  fs.mkdirSync(pathMod.dirname(antigravity), { recursive: true });
+  const agCfg = { wardenv: { enabled: true, PreToolUse: [{ matcher: 'run_command', hooks: [{ command: `${cmd} --agent antigravity` }] }] } };
+  fs.writeFileSync(antigravity, JSON.stringify(agCfg, null, 2));
+  assert.equal(
+    checkWrite({ filePath: antigravity, edits: [{ old: '"enabled": true', new: '"enabled": false' }] }).block,
+    true,
+    'desabilitar hook nomeado do Antigravity'
+  );
+  assert.equal(checkWrite({ filePath: antigravity, body: '{"linter":{}}' }).block, true, 'remover hook nomeado do Antigravity');
+
+  // O Antigravity/editores no Windows podem salvar JSON com UTF-8 BOM. O
+  // prefixo não pode transformar a config protegida numa config invisível.
+  const agRawBom = `\uFEFF${JSON.stringify(agCfg, null, 2)}`;
+  fs.writeFileSync(antigravity, agRawBom);
+  assert.equal(
+    checkWrite({ filePath: antigravity, edits: [{ old: '"enabled": true', new: '"enabled": false' }] }).block,
+    true,
+    'desabilitar hook nomeado com BOM'
+  );
+  for (const value of ['0', 'null', '"false"']) {
+    assert.equal(
+      checkWrite({ filePath: antigravity, edits: [{ old: '"enabled": true', new: `"enabled": ${value}` }] }).block,
+      true,
+      `enabled=${value} não pode alterar a assinatura`
+    );
+  }
+  assert.equal(checkWrite({ filePath: antigravity, body: '\uFEFF{"linter":{}}' }).block, true, 'remover hook nomeado com BOM');
+
+  const workspaceHooks = pathMod.join(home, 'project', '.agents', 'hooks.json');
+  fs.mkdirSync(pathMod.dirname(workspaceHooks), { recursive: true });
+  assert.equal(
+    checkWrite({ filePath: workspaceHooks, body: JSON.stringify({ wardenv: { enabled: false } }) }).block,
+    true,
+    'hook local não pode sombrear o wardenv global'
+  );
 });
 
 test('atrito: editar a config do agente sem tocar no wardenv continua liberado', () => {
@@ -747,6 +787,8 @@ test('atrito: editar a config do agente sem tocar no wardenv continua liberado',
   // Config que ainda não tem o wardenv: nada a proteger.
   const other = pathMod.join(fs.mkdtempSync(pathMod.join(os.tmpdir(), 'wardenv-cfg-none-')), '.claude', 'settings.json');
   assert.equal(checkWrite({ filePath: other, body: '{"hooks":{}}' }).block, false);
+  const workspace = pathMod.join(home, 'project', '.agents', 'hooks.json');
+  assert.equal(checkWrite({ filePath: workspace, body: '{"linter":{}}' }).block, false);
 
   const codexToml = pathMod.join(home, '.codex', 'config.toml');
   fs.mkdirSync(pathMod.dirname(codexToml), { recursive: true });

@@ -40,6 +40,16 @@
   A line-level backstop refuses any line that looks like it disables hooks, even inside
   strings or nested inline tables, so parser gaps fail closed. File-like MCP tools check
   every whitespace-free argument, whatever its key.
+### Added
+
+- Google Antigravity 2.0 adapter and installer target (`wardenv install antigravity`). It
+  guards `view_file`, `grep_search`, `run_command`, and all three file-write tools through
+  the official `PreToolUse` contract. Safe calls return `ask` rather than auto-approving;
+  directory grep is denied whenever it can reach a vault (generated trees such as
+  `node_modules`, `.git` and Rust `target` are not counted). The named hook entry is protected
+  against removal, any `enabled` mutation and workspace shadowing; output redaction remains
+  unavailable because Antigravity's `PostToolUse` hook cannot rewrite tool results.
+- 10 Antigravity adapter, installer, and self-disarm regression cases.
 
 ## 0.2.0 — 2026-09-23
 

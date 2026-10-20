@@ -19,6 +19,7 @@ const ADAPTERS = {
   codex: () => require('./adapters/codex'),
   copilot: () => require('./adapters/copilot'),
   cursor: () => require('./adapters/cursor'),
+  antigravity: () => require('./adapters/antigravity'),
 };
 
 function agentName(argv) {

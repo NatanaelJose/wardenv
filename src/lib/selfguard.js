@@ -20,12 +20,16 @@ const STATE_DIR = path.join(os.homedir(), '.wardenv');
 // trabalho em si: proteger ali impediria qualquer agente de mexer no wardenv.
 // Instalado via npm, não há .git e o código fica protegido.
 const CODE_PROTECTED = !fs.existsSync(path.join(ROOT, '.git'));
+const ANTIGRAVITY_CONFIG_RE = /[\\/](?:\.gemini[\\/]config|\.agents)[\\/]hooks\.json$/i;
+const ANTIGRAVITY_WORKSPACE_RE = /[\\/]\.agents[\\/]hooks\.json$/i;
 
 const AGENT_CONFIG_RE = new RegExp(
   [
     /[\\/]\.claude[\\/]settings(\.local)?\.json$/,
     /[\\/]\.codex[\\/]hooks\.json$/,
     /[\\/]\.gemini[\\/]settings\.json$/,
+    /[\\/]\.gemini[\\/]config[\\/]hooks\.json$/,
+    /[\\/]\.agents[\\/]hooks\.json$/,
     /[\\/]\.cursor[\\/]hooks\.json$/,
     /[\\/]\.copilot[\\/]hooks[\\/][^\\/]+\.json$/,
   ].map((r) => r.source).join('|'),
@@ -46,30 +50,48 @@ function inside(file, dir) {
  * Hooks do wardenv numa config, como assinaturas `evento|matcher|comando`.
  * @returns {Set<string>|null} null quando o texto não é JSON válido
  */
-function wardenvHooks(text) {
-  let cfg;
+function parseConfig(text, allowBom) {
   try {
-    cfg = JSON.parse(text);
+    return JSON.parse(allowBom ? String(text).replace(/^\uFEFF/, '') : String(text));
   } catch {
     return null;
   }
+}
+
+function wardenvHooks(text, { allowBom = false } = {}) {
+  const cfg = parseConfig(text, allowBom);
+  if (!cfg) return null;
   const out = new Set();
-  const hooks = (cfg && cfg.hooks) || {};
-  for (const [event, groups] of Object.entries(hooks)) {
-    if (!Array.isArray(groups)) continue;
-    for (const g of groups) {
-      // Aninhado ({matcher, hooks: [...]}) ou plano (Copilot, Cursor: a
-      // própria entrada é o hook, com o comando em command/bash/powershell).
-      const list = g && Array.isArray(g.hooks) ? g.hooks : g ? [g] : [];
-      for (const h of list) {
-        for (const cmd of [h.command, h.commandWindows, h.bash, h.powershell]) {
-          if (typeof cmd === 'string' && /wardenv[\\/]+hooks[\\/]+(pre|post)-tool\.js/i.test(cmd)) {
-            out.add(`${event}|${g.matcher}|${cmd}`);
+  function collect(hooks, prefix) {
+    for (const [event, groups] of Object.entries(hooks || {})) {
+      if (!Array.isArray(groups)) continue;
+      for (const g of groups) {
+        // Aninhado ({matcher, hooks: [...]}) ou plano (Copilot, Cursor: a
+        // própria entrada é o hook, com o comando em command/bash/powershell).
+        const list = g && Array.isArray(g.hooks) ? g.hooks : g ? [g] : [];
+        for (const h of list) {
+          for (const cmd of [h.command, h.commandWindows, h.bash, h.powershell]) {
+            if (typeof cmd === 'string' && /wardenv[\\/]+hooks[\\/]+(pre|post)-tool\.js/i.test(cmd)) {
+              out.add(`${prefix}|${event}|${g.matcher}|${cmd}`);
+            }
           }
         }
       }
     }
   }
+
+  collect((cfg && cfg.hooks) || {}, 'hooks');
+
+  // Antigravity guarda cada integração numa chave nomeada no topo. O
+  // O valor tipado de enabled faz parte da assinatura: false, 0, null ou
+  // string podem desarmar/quebrar sem remover uma linha de comando.
+  if (cfg && cfg.wardenv && typeof cfg.wardenv === 'object') {
+    const enabled = Object.prototype.hasOwnProperty.call(cfg.wardenv, 'enabled')
+      ? JSON.stringify(cfg.wardenv.enabled)
+      : 'default';
+    collect(cfg.wardenv, `wardenv:enabled=${enabled}`);
+  }
+
   return out;
 }
 
@@ -125,14 +147,29 @@ function checkWrite({ filePath, body = '', edits = null }, opts = {}) {
     // editado não basta: trocar `pre-tool.js` por `noop.js` não menciona o
     // caminho completo e aponta o hook para um arquivo que não existe.
     const after = edits ? applyEdits(current, edits) : body;
+    const antigravity = ANTIGRAVITY_CONFIG_RE.test(filePath);
+    // Antigravity aceita BOM; nos outros agentes, introduzir BOM quebra a
+    // config e precisa continuar sendo detectado como desarme. Se o arquivo
+    // já tinha BOM, ainda precisamos enxergar os hooks que ele continha.
+    const allowBom = antigravity || /^\uFEFF/.test(current);
 
     if (/"disableAllHooks"\s*:\s*true/i.test(after) && !/"disableAllHooks"\s*:\s*true/i.test(current)) {
       return { block: true, reason: 'disables all hooks in the agent config' };
     }
 
-    const before = wardenvHooks(current);
+    const beforeCfg = parseConfig(current, allowBom);
+    const afterCfg = parseConfig(after, allowBom);
+    if (
+      ANTIGRAVITY_WORKSPACE_RE.test(filePath) &&
+      !beforeCfg?.wardenv &&
+      afterCfg?.wardenv
+    ) {
+      return { block: true, reason: 'shadows the global Antigravity wardenv hook' };
+    }
+
+    const before = wardenvHooks(current, { allowBom });
     if (before && before.size) {
-      const now = wardenvHooks(after);
+      const now = wardenvHooks(after, { allowBom });
       // JSON quebrado também desarma: o agente ignora a config inválida.
       if (!now) return { block: true, reason: 'breaks the agent config that registers wardenv' };
       for (const sig of before) {

@@ -92,6 +92,7 @@ function codexPrecheck() {
  * `layout`:
  *   - 'nested': { hooks: { Evento: [ { matcher, hooks: [ {type, command, timeout} ] } ] } }
  *   - 'own':    arquivo só do wardenv, reescrito inteiro (Copilot).
+ *   - 'named':  { wardenv: { Evento: [ { matcher, hooks: [...] } ] } } (Antigravity).
  */
 const TARGETS = {
   claude: {
@@ -208,6 +209,27 @@ const TARGETS = {
       '   Before 1.0.57 Copilot lets a tool run when the hook errors or times out, and\n' +
       '   output redaction needs a release newer than 1.0.11. Update Copilot CLI.',
   },
+  antigravity: {
+    label: 'Google Antigravity',
+    file: path.join(os.homedir(), '.gemini', 'config', 'hooks.json'),
+    detect: path.join(os.homedir(), '.gemini', 'antigravity'),
+    verified: false,
+    layout: 'named',
+    name: 'wardenv',
+    // Antigravity 2.0 usa um arquivo de hooks nomeados. O matcher cobre todas
+    // as tools que podem ler, executar ou escrever conteúdo local.
+    events: {
+      PreToolUse: [
+        '^(view_file|grep_search|run_command|write_to_file|replace_file_content|multi_replace_file_content)$',
+        psSafe(hookCmd('pre-tool.js', 'antigravity')),
+      ],
+    },
+    timeout: 5,
+    note:
+      'Checked against the official Antigravity 2.0 hooks documentation, not yet against\n' +
+      '   a live session. PostToolUse cannot rewrite output, so direct reads, shell commands,\n' +
+      '   writes and uploads are guarded, but output redaction is not available.',
+  },
 };
 
 function isWardenv(h) {
@@ -312,6 +334,25 @@ function uninstallOwn(target) {
   else fs.unlinkSync(target.file);
 }
 
+function installNamed(target) {
+  const cfg = loadConfig(target.file);
+  const named = { enabled: true };
+  for (const [event, [matcher, command]] of Object.entries(target.events)) {
+    named[event] = [{
+      matcher,
+      hooks: [{ type: 'command', command, timeout: target.timeout }],
+    }];
+  }
+  cfg[target.name] = named;
+  writeAtomic(target.file, JSON.stringify(cfg, null, 2));
+}
+
+function uninstallNamed(target) {
+  const cfg = loadConfig(target.file);
+  delete cfg[target.name];
+  writeAtomic(target.file, JSON.stringify(cfg, null, 2));
+}
+
 function main() {
   const args = process.argv.slice(2);
   const uninstall = args.includes('--uninstall');
@@ -363,6 +404,9 @@ function main() {
     if (target.layout === 'own') {
       if (uninstall) uninstallOwn(target);
       else installOwn(target);
+    } else if (target.layout === 'named') {
+      if (uninstall) uninstallNamed(target);
+      else installNamed(target);
     } else if (target.layout === 'cursor') {
       const cfg = loadConfig(target.file);
       cfg.hooks = cfg.hooks || {};

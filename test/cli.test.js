@@ -293,3 +293,48 @@ test('install: o comando registrado para Cursor é sintaxe PowerShell válida no
   const out = JSON.parse(r.stdout.trim());
   assert.equal(out.permission, 'deny', 'deveria negar `cat .env`');
 });
+
+test('install: Antigravity preserva hooks nomeados, reinstala limpo e desinstala só o wardenv', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-antigravity-install-'));
+  const configDir = path.join(home, '.gemini', 'config');
+  fs.mkdirSync(configDir, { recursive: true });
+  const hooksFile = path.join(configDir, 'hooks.json');
+  fs.writeFileSync(hooksFile, JSON.stringify({
+    linter: { PostToolUse: [{ matcher: 'write_to_file', hooks: [{ command: 'npm run lint' }] }] },
+    wardenv: { enabled: false, PreToolUse: [] },
+  }));
+
+  const runInstall = (args) => spawnSync(process.execPath, ['-e', [
+    `require('os').homedir = () => ${JSON.stringify(home)};`,
+    `process.argv = [process.execPath, 'install.js', ...${JSON.stringify(args)}];`,
+    `require(${JSON.stringify(INSTALL)});`,
+  ].join('\n')], { encoding: 'utf8' });
+
+  assert.equal(runInstall(['antigravity']).status, 0);
+  let cfg = JSON.parse(fs.readFileSync(hooksFile, 'utf8'));
+  assert.equal(cfg.wardenv.enabled, true, 'instalação deve reativar uma entrada antiga desabilitada');
+  const registered = cfg.wardenv.PreToolUse[0].hooks[0].command;
+  assert.match(registered, /--agent antigravity/);
+  if (process.platform === 'win32') {
+    assert.match(registered, /^& /, 'comando precisa ser invocável pelo PowerShell');
+    const probe = path.join(home, 'antigravity-probe.ps1');
+    fs.writeFileSync(probe, registered);
+    const payload = JSON.stringify({
+      workspacePaths: [home],
+      toolCall: { name: 'run_command', args: { CommandLine: 'cat .env', Cwd: home } },
+    });
+    const invoked = spawnSync('powershell', ['-NoProfile', '-File', probe], { input: payload, encoding: 'utf8' });
+    assert.equal(invoked.status, 0, `comando registrado deveria rodar no PowerShell\n${invoked.stderr}`);
+    assert.equal(JSON.parse(invoked.stdout).decision, 'deny');
+  }
+  assert.ok(cfg.linter, 'hook nomeado de terceiro deveria sobreviver');
+
+  assert.equal(runInstall(['antigravity']).status, 0);
+  cfg = JSON.parse(fs.readFileSync(hooksFile, 'utf8'));
+  assert.equal((JSON.stringify(cfg).match(/--agent antigravity/g) || []).length, 1, 'reinstalar não duplica');
+
+  assert.equal(runInstall(['antigravity', '--uninstall']).status, 0);
+  cfg = JSON.parse(fs.readFileSync(hooksFile, 'utf8'));
+  assert.equal(cfg.wardenv, undefined);
+  assert.ok(cfg.linter, 'desinstalação deveria preservar hook de terceiro');
+});

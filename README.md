@@ -6,7 +6,7 @@
 
 [![npm](https://img.shields.io/npm/v/wardenv?color=black)](https://www.npmjs.com/package/wardenv)
 [![license](https://img.shields.io/badge/license-MIT-black)](./LICENSE)
-[![tests](https://img.shields.io/badge/tests-123%20passing-black)](./test/wardenv.test.js)
+[![tests](https://img.shields.io/badge/tests-134%20passing-black)](./test/wardenv.test.js)
 [![deps](https://img.shields.io/badge/dependencies-0-black)](./package.json)
 
 <a href="https://www.buymeacoffee.com/natanaelisidoro"><img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=natanaelisidoro&button_colour=FF5F5F&font_colour=ffffff&font_family=Poppins&outline_colour=000000&coffee_colour=FFDD00" alt="Buy me a coffee" height="40"></a>
@@ -94,7 +94,7 @@ wardenv install
 
 Restart your agent. Done.
 
-The installer backs up your `settings.json` first, is idempotent, and leaves every other
+The installer backs up the agent's config first, is idempotent, and leaves every other
 hook untouched. wardenv takes the front of the chain, so nothing else even processes a
 blocked command.
 
@@ -108,7 +108,8 @@ GSD setup on the same machine.</sub>
 ### Agent support
 
 `wardenv install` detects the supported agents you have and installs into each. `wardenv
-install <agent>` targets one directly: `claude`, `gemini`, `cursor`, `codex`, `copilot`.
+install <agent>` targets one directly: `claude`, `gemini`, `cursor`, `codex`, `copilot`,
+`antigravity`.
 
 | Agent | Config | Read | Shell | Write | Output redaction | Self-disarm | Status |
 |-------|--------|------|-------|-------|-------------------|-------------|--------|
@@ -117,6 +118,7 @@ install <agent>` targets one directly: `claude`, `gemini`, `cursor`, `codex`, `c
 | Cursor | `~/.cursor/hooks.json` | ✅ | ✅ | ✅ | ❌ no hook for it | ✅ | ⚠️ unverified — checked against 3.4.20 source, not a live session |
 | Codex CLI | `~/.codex/hooks.json` | ✅ shell + local/MCP args¹ | ✅ | ✅ (`apply_patch`) | ⚠️ deny-and-replace for every local tool | ✅ | ⚠️ close to verified — a live 0.156.1 Desktop run blocked the original suite; current all-tool coverage is docs-tested, not live-tested |
 | GitHub Copilot CLI | `~/.copilot/hooks/wardenv.json` | ✅ | ✅ | ✅ | ⚠️ needs a newer release | ✅ | ⚠️ unverified — needs Copilot CLI newer than 1.0.11, and PowerShell 7 on Windows (see below) |
+| Google Antigravity 2.0 | `~/.gemini/config/hooks.json` | ✅ | ✅ | ✅ | ❌ no rewrite support | ✅ | ⚠️ unverified — checked against the official hooks docs, not a live session |
 
 ¹ Codex has no dedicated built-in file-read tool. wardenv guards shell reads and
 conservatively blocks secret paths/values passed to MCPs or other local function tools.
@@ -125,19 +127,23 @@ Hosted tools and specialized paths that opt out of Codex hooks remain outside th
 "Verified" means run against a real session with a throwaway `.env`: read the file, `cat`
 it, `curl` it out, write the value into a tracked file, and try to disarm wardenv itself —
 and confirm every one of those got blocked. Only Claude Code has been run through that
-protocol so far. The other four adapters were built and unit-tested against each agent's
+protocol so far. The other five adapters were built and unit-tested against each agent's
 real hook payload (from source and official docs), and the installer was exercised end to
 end against a fake home directory, but nobody has yet pointed a live agent at them. Treat
 `⚠️ unverified` as "should work, not yet proven" — it's why the installer prints a warning
 after installing one.
 
-Two things worth knowing before you rely on any of the unverified adapters:
+Things worth knowing before you rely on any of the unverified adapters:
 
 - **Only Claude Code and Codex let a hook rewrite a tool's output**, and even there it's a
   block-and-replace, not a true "redact and continue" — the model sees the redacted text
   as the tool's result. Gemini can only deny with the redacted text as the reason. Cursor
-  has no hook for shell or file output at all, so door 3 (ricochet) can't be closed there —
-  a leak of a known secret through an otherwise-innocent command goes undetected.
+  and Antigravity cannot rewrite shell or file output, so door 3 (ricochet) can't be closed
+  there — a leak of a known secret through an otherwise-innocent command goes undetected.
+- **Antigravity safe-path responses use `ask`, never `allow`.** This keeps the user's
+  normal approval flow in charge. Directory grep is fail-closed: if a line-producing
+  search can reach any vault file, wardenv denies it rather than attempting to reimplement
+  ripgrep regex, glob, encoding and ignore semantics.
 - **Codex 0.116.0 has no pre/post-tool hook at all** (confirmed against a real session: it
   read a `.env`, uploaded it, and ran `wardenv unlock` on itself, and wardenv never saw any
   of it). Tool hooks landed in 0.129, with `updatedInput` rewrites needed by other tools
@@ -166,10 +172,10 @@ Two things worth knowing before you rely on any of the unverified adapters:
   operator). The hook then never produces JSON and wardenv fails open: the read goes
   through with no error visible anywhere. This was found live, against a real Codex
   Desktop session, and is why the installer now prefixes the command with `&` for Codex,
-  Cursor, and Copilot's `powershell` field.
+  Cursor, Antigravity, and Copilot's `powershell` field.
 
 Not supported at all: Trae, Factory Droid, Mistral Vibe, OpenCode, Pi/OMP, Hermes, and any
-agent that only offers a rules file (Cline, Windsurf, Kilo Code, Antigravity) — those can't
+agent that only offers a rules file (Cline, Windsurf, Kilo Code) — those can't
 block anything, only ask the model nicely to prefix a command.
 
 ---

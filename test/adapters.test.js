@@ -39,6 +39,7 @@ const DENIED = {
   gemini: (r) => r?.decision === 'deny' && !!r.reason,
   copilot: (r) => r?.permissionDecision === 'deny' && !!r.permissionDecisionReason,
   cursor: (r) => r?.permission === 'deny' && !!r.user_message,
+  antigravity: (r) => r?.decision === 'deny' && !!r.reason,
 };
 
 // Payloads por agente para os mesmos cenários. `null` = o agente não tem a tool.
@@ -74,6 +75,20 @@ const CASES = {
     shell: (cwd, command) => ({ cursor_version: '3.4.20', tool_name: 'Shell', cwd, tool_input: { command, cwd } }),
     write: (cwd, file, content) => ({ cursor_version: '3.4.20', tool_name: 'Write', cwd, tool_input: { file_path: path.join(cwd, file), content } }),
   },
+  antigravity: {
+    read: (cwd) => ({
+      workspacePaths: [cwd],
+      toolCall: { name: 'view_file', args: { AbsolutePath: path.join(cwd, '.env') } },
+    }),
+    shell: (cwd, command) => ({
+      workspacePaths: [cwd],
+      toolCall: { name: 'run_command', args: { CommandLine: command, Cwd: cwd, WaitMsBeforeAsync: 5000 } },
+    }),
+    write: (cwd, file, content) => ({
+      workspacePaths: [cwd],
+      toolCall: { name: 'write_to_file', args: { TargetFile: path.join(cwd, file), CodeContent: content } },
+    }),
+  },
 };
 
 for (const [agent, c] of Object.entries(CASES)) {
@@ -104,9 +119,13 @@ for (const [agent, c] of Object.entries(CASES)) {
     assert.ok(denied(run(PRE, agent, c.write(cwd, 'config.ts', `const k = "${SECRET}"`))));
   });
 
-  // Cursor exige JSON em todo caminho, então liberar responde "{}"; os outros
-  // agentes não recebem nada quando não há deny.
-  const ALLOWED = agent === 'cursor' ? {} : null;
+  // Cursor exige JSON em todo caminho. Antigravity não tem "no opinion":
+  // ask preserva a permissão normal sem auto-aprovar; os outros calam.
+  const ALLOWED = agent === 'cursor'
+    ? {}
+    : agent === 'antigravity'
+      ? { decision: 'ask', reason: 'wardenv found no secret risk; apply normal Antigravity permissions.' }
+      : null;
 
   test(`atrito (${agent}): comando e escrita inocentes passam sem saída`, () => {
     const cwd = sandbox(`${agent}-ok`);
@@ -327,6 +346,142 @@ test('cursor: payload dele é detectado mesmo com --agent claude (config de terc
   const cwd = sandbox('cursor-via-claude');
   const r = run(PRE, 'claude', CASES.cursor.shell(cwd, 'cat .env'));
   assert.ok(DENIED.cursor(r), 'deveria responder no formato do Cursor, não do Claude');
+});
+
+test('antigravity: grep_search dentro de .env é tratado como leitura', () => {
+  const cwd = sandbox('antigravity-grep');
+  const r = run(PRE, 'antigravity', {
+    workspacePaths: [cwd],
+    toolCall: { name: 'grep_search', args: { SearchPath: path.join(cwd, '.env'), Query: 'SECRET' } },
+  });
+  assert.ok(DENIED.antigravity(r));
+  assert.match(r.reason, /SECRET_KEY=<set, 16 chars>/);
+  assert.doesNotMatch(r.reason, new RegExp(SECRET));
+
+  const included = run(PRE, 'antigravity', {
+    workspacePaths: [cwd],
+    toolCall: { name: 'grep_search', args: {
+      SearchPath: cwd,
+      Query: 'SECRET_KEY',
+      Includes: ['*.env'],
+    } },
+  });
+  assert.ok(DENIED.antigravity(included));
+  assert.doesNotMatch(included.reason, new RegExp(SECRET));
+});
+
+test('antigravity: grep_search na raiz é negado quando um cofre é alcançável', () => {
+  const cwd = sandbox('antigravity-grep-root');
+  const r = run(PRE, 'antigravity', {
+    workspacePaths: [cwd],
+    toolCall: { name: 'grep_search', args: {
+      SearchPath: cwd,
+      Query: '^secret_key=',
+      IsRegex: true,
+      CaseInsensitive: true,
+    } },
+  });
+  assert.ok(DENIED.antigravity(r));
+  assert.match(r.reason, /SECRET_KEY=<set, 16 chars>/);
+  assert.doesNotMatch(r.reason, new RegExp(SECRET));
+});
+
+test('antigravity: grep_search nega conservadoramente qualquer cofre alcançável', () => {
+  const cwd = sandbox('antigravity-grep-root-ok');
+  fs.writeFileSync(path.join(cwd, 'app.js'), 'const visible = true;\n');
+
+  const noMatch = run(PRE, 'antigravity', {
+    workspacePaths: [cwd],
+    toolCall: { name: 'grep_search', args: { SearchPath: cwd, Query: 'visible' } },
+  });
+  assert.ok(DENIED.antigravity(noMatch));
+
+  const excludedByInclude = run(PRE, 'antigravity', {
+    workspacePaths: [cwd],
+    toolCall: { name: 'grep_search', args: {
+      SearchPath: cwd,
+      Query: 'SECRET_KEY',
+      Includes: ['*.js'],
+    } },
+  });
+  assert.ok(DENIED.antigravity(excludedByInclude));
+
+  const excludedByNegativeGlob = run(PRE, 'antigravity', {
+    workspacePaths: [cwd],
+    toolCall: { name: 'grep_search', args: {
+      SearchPath: cwd,
+      Query: 'SECRET_KEY',
+      Includes: ['!**/.env'],
+    } },
+  });
+  assert.ok(DENIED.antigravity(excludedByNegativeGlob));
+
+  const filenamesOnly = run(PRE, 'antigravity', {
+    workspacePaths: [cwd],
+    toolCall: { name: 'grep_search', args: {
+      SearchPath: cwd,
+      Query: 'SECRET_KEY',
+      MatchPerLine: false,
+    } },
+  });
+  assert.equal(filenamesOnly.decision, 'ask');
+
+  const clean = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-antigravity-grep-clean-'));
+  fs.writeFileSync(path.join(clean, 'app.js'), 'const visible = true;\n');
+  const cleanSearch = run(PRE, 'antigravity', {
+    workspacePaths: [clean],
+    toolCall: { name: 'grep_search', args: { SearchPath: clean, Query: 'visible' } },
+  });
+  assert.equal(cleanSearch.decision, 'ask');
+});
+
+test('atrito: grep_search na raiz de projeto JS não conta node_modules nem .git', () => {
+  // Achado real: um projeto vite tem node_modules/vite/dist/client/env.mjs e
+  // centenas de diretórios; todo grep na raiz era negado.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-antigravity-grep-node-'));
+  fs.writeFileSync(path.join(root, 'app.js'), 'const visible = true;\n');
+  for (let i = 0; i < 600; i++) fs.mkdirSync(path.join(root, 'node_modules', `pkg${i}`), { recursive: true });
+  fs.mkdirSync(path.join(root, 'node_modules', 'vite', 'dist', 'client'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'node_modules', 'vite', 'dist', 'client', 'env.mjs'), 'export {}\n');
+  fs.mkdirSync(path.join(root, '.git'));
+  const grep = (SearchPath) => run(PRE, 'antigravity', {
+    workspacePaths: [root],
+    toolCall: { name: 'grep_search', args: { SearchPath, Query: 'visible' } },
+  });
+  assert.equal(grep(root).decision, 'ask');
+
+  // A raiz da busca nunca é pulada: buscar dentro de node_modules continua avaliado.
+  fs.writeFileSync(path.join(root, 'node_modules', 'pkg1', '.env'), `SECRET_KEY=${SECRET}\n`);
+  assert.ok(DENIED.antigravity(grep(path.join(root, 'node_modules', 'pkg1'))));
+});
+
+test('antigravity: as duas tools de edição bloqueiam segredo novo', () => {
+  const cwd = sandbox('antigravity-multi');
+  const file = path.join(cwd, 'config.ts');
+  fs.writeFileSync(file, 'const a = 1;\nconst k = "";\n');
+
+  const single = run(PRE, 'antigravity', {
+    workspacePaths: [cwd],
+    toolCall: { name: 'replace_file_content', args: {
+      TargetFile: file,
+      TargetContent: 'const k = "";',
+      ReplacementContent: `const k = "${SECRET}";`,
+      AllowMultiple: false,
+    } },
+  });
+  assert.ok(DENIED.antigravity(single));
+
+  const multi = run(PRE, 'antigravity', {
+    workspacePaths: [cwd],
+    toolCall: { name: 'multi_replace_file_content', args: {
+      TargetFile: file,
+      ReplacementChunks: [
+        { TargetContent: 'const a = 1;', ReplacementContent: 'const a = 2;', AllowMultiple: false },
+        { TargetContent: 'const k = "";', ReplacementContent: `const k = "${SECRET}";`, AllowMultiple: false },
+      ],
+    } },
+  });
+  assert.ok(DENIED.antigravity(multi));
 });
 
 test('agente desconhecido: falha aberta, sem saída', () => {
