@@ -39,7 +39,7 @@ function envStructure(filePath) {
 
 /**
  * @param {object} n  tentativa normalizada
- * @param {'read'|'shell'|'write'|'interactive'|'opaque'|'other'} n.kind
+ * @param {'read'|'shell'|'write'|'interactive'|'unscannable'|'opaque'|'other'} n.kind
  * @param {string} n.tool      nome da tool no agente, só para o log
  * @param {string} [n.path]    alvo, para 'read' e 'write'
  * @param {string} [n.command] linha de comando, para 'shell'
@@ -76,6 +76,16 @@ function decide(n) {
   }
 
   // ---- Sessão interativa --------------------------------------------
+  // ---- Busca grande demais para provar que não alcança cofre ----------
+  if (n.kind === 'unscannable') {
+    log({ event: 'block-unscannable', tool, path: n.path, agent, cwd });
+    return deny(
+      'wardenv: search scope too large to rule out secret files.',
+      `wardenv could not check every directory under ${n.path} within its limit, so it cannot ` +
+        'prove the search stays away from .env files. Search a narrower directory instead.'
+    );
+  }
+
   if (n.kind === 'interactive') {
     log({ event: 'block-interactive', tool, command: n.command, agent, cwd });
     return deny(

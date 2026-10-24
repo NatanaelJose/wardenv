@@ -76,7 +76,7 @@ function normalizeGrep(base, ti, abs) {
   if (unique.length) return unique.map((file) => ({ ...base, kind: 'read', path: file }));
   // A busca real alcançaria mais arquivos do que o hook conseguiu avaliar
   // dentro do limite. Negar é mais seguro que declarar essa área limpa.
-  if (incompleteTarget) return { ...base, kind: 'read', path: path.join(incompleteTarget, '.env') };
+  if (incompleteTarget) return { ...base, kind: 'unscannable', path: incompleteTarget };
   return { ...base, kind: 'other' };
 }
 

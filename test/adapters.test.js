@@ -450,6 +450,17 @@ test('atrito: grep_search na raiz de projeto JS não conta node_modules nem .git
   });
   assert.equal(grep(root).decision, 'ask');
 
+  // Árvore grande demais sem cofre: nega, mas sem inventar um .env inexistente.
+  const huge = fs.mkdtempSync(path.join(os.tmpdir(), 'wardenv-antigravity-grep-huge-'));
+  for (let i = 0; i < 600; i++) fs.mkdirSync(path.join(huge, 'src', `d${i}`), { recursive: true });
+  const tooLarge = run(PRE, 'antigravity', {
+    workspacePaths: [huge],
+    toolCall: { name: 'grep_search', args: { SearchPath: huge, Query: 'visible' } },
+  });
+  assert.ok(DENIED.antigravity(tooLarge));
+  assert.match(tooLarge.reason, /too large/);
+  assert.doesNotMatch(tooLarge.reason, /is a secret file/);
+
   // A raiz da busca nunca é pulada: buscar dentro de node_modules continua avaliado.
   fs.writeFileSync(path.join(root, 'node_modules', 'pkg1', '.env'), `SECRET_KEY=${SECRET}\n`);
   assert.ok(DENIED.antigravity(grep(path.join(root, 'node_modules', 'pkg1'))));
