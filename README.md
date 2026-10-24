@@ -338,7 +338,7 @@ matter of writing one adapter file, not touching the policy.
 npm test
 ```
 
-101 tests. The engine suite covers two classes, and the second matters as much as the
+134 tests. The engine suite covers two classes, and the second matters as much as the
 first:
 
 - Leak (false negative): a secret got through. A security failure.
